@@ -4,6 +4,19 @@ const SESSION_DURATION = 60
 const FFT_SIZE = 2048
 const BRISTLE_COUNT = 620
 const PAPER = '#ebe6da'
+const TOOLS = [
+  { id: 'brush', label: 'Pinceau', glyph: '╱' },
+  { id: 'ribbon', label: 'Ruban', glyph: '≈' },
+  { id: 'spray', label: 'Souffle', glyph: '⁙' },
+  { id: 'pulse', label: 'Onde', glyph: '◉' },
+  { id: 'eraser', label: 'Gomme', glyph: '◇' },
+]
+const INKS = [
+  { id: 'sumi', label: 'Sumi', rgb: '10,12,11', hex: '#0a0c0b' },
+  { id: 'indigo', label: 'Indigo', rgb: '29,47,68', hex: '#1d2f44' },
+  { id: 'vermilion', label: 'Vermillon', rgb: '145,49,34', hex: '#913122' },
+  { id: 'moss', label: 'Mousse', rgb: '52,70,53', hex: '#344635' },
+]
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value))
 const lerp = (a, b, t) => a + (b - a) * t
@@ -36,7 +49,7 @@ function App() {
     state: 'IDLE', context: null, audioContext: null, stream: null, analyser: null,
     frequency: null, waveform: null, spectrum: null, lastSpectrum: null, features: null,
     bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
-    animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0,
+    animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
   })
   const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
@@ -44,6 +57,10 @@ function App() {
   const [energy, setEnergy] = useState(0)
   const [endOpen, setEndOpen] = useState(false)
   const [error, setError] = useState('')
+  const [tool, setTool] = useState('brush')
+  const [ink, setInk] = useState(INKS[0])
+  const [brushSize, setBrushSize] = useState(1)
+  const [hasMarks, setHasMarks] = useState(false)
 
   const makePaper = useCallback(() => {
     const e = engine.current
@@ -213,15 +230,42 @@ function App() {
     const tx = dx / length, ty = dy / length, nx = -ty, ny = tx
     const velocity = length / Math.max(1, b.time - a.time)
     const voice = clamp((f.energy - 0.012) * 1.4)
-    const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7)
+    const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7) * brushSize
     const dryness = clamp(0.25 + velocity * 0.28 + f.noise * 0.16 + (1 - f.energy) * 0.28 - f.low * 0.12)
     ctx.lineCap = 'round'
+    if (tool === 'eraser') {
+      ctx.save(); ctx.strokeStyle = PAPER; ctx.lineWidth = Math.max(18, width * 1.25); ctx.globalAlpha = 0.92
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore(); return
+    }
+    if (tool === 'spray') {
+      const particles = Math.floor(8 + voice * 65 + f.high * 22)
+      for (let i = 0; i < particles; i += 1) {
+        const along = Math.random(), radius = Math.abs(gaussian()) * width * (0.35 + f.noise)
+        const angle = Math.random() * Math.PI * 2
+        ctx.fillStyle = `rgba(${ink.rgb},${rand(0.02, 0.13) * (0.35 + voice)})`; ctx.beginPath()
+        ctx.arc(lerp(a.x, b.x, along) + Math.cos(angle) * radius, lerp(a.y, b.y, along) + Math.sin(angle) * radius, rand(.25, 1.5 + f.high * 2), 0, Math.PI * 2); ctx.fill()
+      }
+      return
+    }
+    if (tool === 'pulse') {
+      if (Math.random() < .18 + f.flux * .5) {
+        ctx.save(); ctx.strokeStyle = `rgba(${ink.rgb},${.08 + voice * .28})`; ctx.lineWidth = .5 + f.high * 2
+        ctx.beginPath(); ctx.arc(b.x, b.y, 4 + width * (.25 + f.low), 0, Math.PI * 2); ctx.stroke(); ctx.restore()
+      }
+      return
+    }
+    if (tool === 'ribbon') {
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${.035 + voice * .2})`
+      ctx.lineWidth = Math.max(2, width * .34); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
+      ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
+      return
+    }
     if (voice > 0.025) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(69,61,49,${0.003 + voice * 0.018})`; ctx.lineWidth = width * 1.32
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${0.003 + voice * 0.018})`; ctx.lineWidth = width * 1.32
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore()
     }
     if (voice > 0.018) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(6,7,6,${0.008 + voice * 0.085})`; ctx.lineWidth = width * 0.58
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${0.008 + voice * 0.085})`; ctx.lineWidth = width * 0.58
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * gaussian() * f.mid * 4, (a.y + b.y) / 2 + ny * gaussian() * f.mid * 4, b.x, b.y); ctx.stroke(); ctx.restore()
     }
     for (let i = 0; i < e.bristles.length; i += 2) {
@@ -236,7 +280,7 @@ function App() {
       const ax = a.x + nx * (spread + deformation) + tx * bend
       const ay = a.y + ny * (spread + deformation) + ty * bend
       const bx = b.x + nx * (spread + deformation), by = b.y + ny * (spread + deformation)
-      ctx.strokeStyle = `rgba(3,4,3,${(0.006 + activation * 0.16) * (1 - dryness * 0.5)})`
+      ctx.strokeStyle = `rgba(${ink.rgb},${(0.006 + activation * 0.16) * (1 - dryness * 0.5)})`
       ctx.lineWidth = bristle.width * (0.35 + spectral * 1.5)
       ctx.beginPath(); ctx.moveTo(ax + gaussian() * 0.2, ay + gaussian() * 0.2)
       ctx.quadraticCurveTo((ax + bx) / 2 + nx * oscillation * f.high * 4, (ay + by) / 2 + ny * oscillation * f.high * 4, bx, by); ctx.stroke()
@@ -266,7 +310,12 @@ function App() {
   const pointerDown = (event) => {
     const e = engine.current
     if (e.state !== 'LIVE') return
+    try {
+      e.history.push(e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height))
+      if (e.history.length > 8) e.history.shift()
+    } catch { e.history = [] }
     e.pointerDown = true
+    setHasMarks(true)
     e.lastPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5 }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
@@ -289,7 +338,28 @@ function App() {
   const reset = () => {
     const e = engine.current
     setEndOpen(false); makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
+    e.history = []; setHasMarks(false)
     setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setError('')
+  }
+
+  const undo = () => {
+    const e = engine.current
+    const previous = e.history.pop()
+    if (previous) e.context.putImageData(previous, 0, 0)
+    setHasMarks(e.history.length > 0)
+  }
+
+  const clearPaper = () => {
+    const e = engine.current
+    if (hasMarks) e.history.push(e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height))
+    makePaper(); setHasMarks(e.history.length > 0)
+  }
+
+  const download = () => {
+    const link = document.createElement('a')
+    link.download = `koe-no-fude-${new Date().toISOString().slice(0, 10)}.png`
+    link.href = canvasRef.current.toDataURL('image/png')
+    link.click()
   }
 
   const hint = phase === 'live' ? 'LEVEZ · REPRENEZ · PARLEZ · SOUFFLEZ' : phase === 'drying' ? 'NE TOUCHEZ PLUS' : phase === 'finished' ? 'UNE MINUTE DE VOIX · UNE EMPREINTE' : 'VOIX = MATIÈRE · GESTE = FORME'
@@ -301,6 +371,17 @@ function App() {
         <span className="brand-mark" aria-hidden="true">声</span>
         <span><strong>Koe no Fude</strong><small>声の筆 · LE PINCEAU DE LA VOIX</small></span>
       </header>
+      <aside className="studio-tools" aria-label="Atelier de peinture">
+        <div className="tool-heading"><span>OUTILS</span><small>05</small></div>
+        <div className="tool-list">
+          {TOOLS.map((item, index) => <button key={item.id} className={tool === item.id ? 'active' : ''} onClick={() => setTool(item.id)} title={item.label} aria-label={item.label} aria-pressed={tool === item.id}><span>{item.glyph}</span><em>0{index + 1}</em></button>)}
+        </div>
+        <div className="size-control">
+          <label htmlFor="brush-size"><span>ÉPAISSEUR</span><b>{Math.round(brushSize * 100)}</b></label>
+          <input id="brush-size" type="range" min="0.45" max="1.8" step="0.05" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
+        </div>
+        <div className="ink-control"><span>ENCRES</span><div>{INKS.map((color) => <button key={color.id} className={ink.id === color.id ? 'active' : ''} style={{ '--ink': color.hex }} onClick={() => setInk(color)} aria-label={color.label} title={color.label} />)}</div></div>
+      </aside>
       <section className="controls" aria-live="polite">
         <button className="start-button" onClick={startSession} disabled={phase === 'live' || phase === 'drying'}>
           <span className="button-dot" />{phase === 'finished' ? 'TERMINÉ' : 'COMMENCER'}
@@ -311,6 +392,12 @@ function App() {
           <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>
         </div>
       </section>
+      <nav className="canvas-actions" aria-label="Actions de la toile">
+        <button onClick={undo} disabled={!hasMarks} title="Annuler"><span>↶</span> ANNULER</button>
+        <button onClick={clearPaper} disabled={!hasMarks} title="Effacer la toile"><span>×</span> EFFACER</button>
+        <button onClick={download} title="Exporter l’œuvre"><span>↓</span> EXPORTER</button>
+      </nav>
+      <div className="sound-legend" aria-hidden="true"><span>GRAVE</span><i /><i /><i /><i className="lit" style={{ transform: `scaleY(${.25 + energy * .75})` }} /><span>AIGU</span></div>
       {error && <p className="error-message">{error}</p>}
       <div className="edition"><span>EXPÉRIENCE SONORE</span><i /><span>ÉDITION 01</span></div>
       <p className="hint">{hint}</p>
