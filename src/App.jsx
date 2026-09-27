@@ -4,6 +4,11 @@ const SESSION_DURATION = 60
 const FFT_SIZE = 2048
 const BRISTLE_COUNT = 620
 const PAPER = '#ebe6da'
+const PALETTES = {
+  sumi: { name: 'Encre', ink: '8,10,9', accent: '#d95535' },
+  indigo: { name: 'Nuit', ink: '29,45,72', accent: '#315d83' },
+  ember: { name: 'Terre', ink: '91,37,25', accent: '#b64b32' },
+}
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value))
 const lerp = (a, b, t) => a + (b - a) * t
@@ -36,6 +41,7 @@ function App() {
     state: 'IDLE', context: null, audioContext: null, stream: null, analyser: null,
     frequency: null, waveform: null, spectrum: null, lastSpectrum: null, features: null,
     bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
+    cursor: null, palette: PALETTES.sumi,
     animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0,
   })
   const [status, setStatus] = useState('Prêt à créer')
@@ -43,6 +49,9 @@ function App() {
   const [progress, setProgress] = useState(0)
   const [energy, setEnergy] = useState(0)
   const [endOpen, setEndOpen] = useState(false)
+  const [introOpen, setIntroOpen] = useState(true)
+  const [palette, setPalette] = useState('sumi')
+  const [features, setFeatures] = useState({ low: 0, mid: 0, high: 0, flux: 0 })
   const [error, setError] = useState('')
 
   const makePaper = useCallback(() => {
@@ -161,12 +170,32 @@ function App() {
     const e = engine.current
     if (e.state !== 'LIVE') return
     const currentEnergy = analyse()
+    // Percussive changes answer the hand with a small, autonomous resonance.
+    if (e.cursor && e.features.flux > 0.16 && Math.random() < e.features.flux * 0.32) {
+      const ctx = e.context
+      const radius = 5 + e.features.low * 24 + Math.random() * 8
+      ctx.save()
+      ctx.globalCompositeOperation = 'multiply'
+      ctx.strokeStyle = `rgba(${e.palette.ink},${0.025 + e.features.flux * 0.08})`
+      ctx.lineWidth = 0.4 + e.features.high * 1.2
+      ctx.beginPath()
+      ctx.ellipse(e.cursor.x + gaussian() * 16, e.cursor.y + gaussian() * 16, radius, radius * (0.25 + e.features.mid * 0.6), Math.random() * Math.PI, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+    }
     const elapsed = (now - e.startedAt) / 1000
     setProgress(clamp(elapsed / SESSION_DURATION))
     setEnergy(currentEnergy)
+    setFeatures(e.features)
     if (elapsed >= SESSION_DURATION) finishSession()
     else e.animation = requestAnimationFrame(runLoop)
   }, [analyse, finishSession])
+
+  const choosePalette = (key) => {
+    if (phase === 'live' || phase === 'drying') return
+    engine.current.palette = PALETTES[key]
+    setPalette(key)
+  }
 
   const startSession = async () => {
     const e = engine.current
@@ -217,11 +246,11 @@ function App() {
     const dryness = clamp(0.25 + velocity * 0.28 + f.noise * 0.16 + (1 - f.energy) * 0.28 - f.low * 0.12)
     ctx.lineCap = 'round'
     if (voice > 0.025) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(69,61,49,${0.003 + voice * 0.018})`; ctx.lineWidth = width * 1.32
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${e.palette.ink},${0.003 + voice * 0.018})`; ctx.lineWidth = width * 1.32
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore()
     }
     if (voice > 0.018) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(6,7,6,${0.008 + voice * 0.085})`; ctx.lineWidth = width * 0.58
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${e.palette.ink},${0.008 + voice * 0.085})`; ctx.lineWidth = width * 0.58
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * gaussian() * f.mid * 4, (a.y + b.y) / 2 + ny * gaussian() * f.mid * 4, b.x, b.y); ctx.stroke(); ctx.restore()
     }
     for (let i = 0; i < e.bristles.length; i += 2) {
@@ -236,7 +265,7 @@ function App() {
       const ax = a.x + nx * (spread + deformation) + tx * bend
       const ay = a.y + ny * (spread + deformation) + ty * bend
       const bx = b.x + nx * (spread + deformation), by = b.y + ny * (spread + deformation)
-      ctx.strokeStyle = `rgba(3,4,3,${(0.006 + activation * 0.16) * (1 - dryness * 0.5)})`
+      ctx.strokeStyle = `rgba(${e.palette.ink},${(0.006 + activation * 0.16) * (1 - dryness * 0.5)})`
       ctx.lineWidth = bristle.width * (0.35 + spectral * 1.5)
       ctx.beginPath(); ctx.moveTo(ax + gaussian() * 0.2, ay + gaussian() * 0.2)
       ctx.quadraticCurveTo((ax + bx) / 2 + nx * oscillation * f.high * 4, (ay + by) / 2 + ny * oscillation * f.high * 4, bx, by); ctx.stroke()
@@ -244,12 +273,12 @@ function App() {
     const breath = f.noise * (0.3 + f.high * 0.7) * voice
     for (let i = 0; i < Math.floor(breath * 32); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * (0.3 + breath * 0.8)
-      ctx.fillStyle = `rgba(20,20,17,${rand(0.006, 0.045)})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${e.palette.ink},${rand(0.006, 0.045)})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.15, 1.8), 0, Math.PI * 2); ctx.fill()
     }
     for (let i = 0; i < Math.floor(voice * 18 + f.mid * 10); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * 0.27
-      ctx.fillStyle = `rgba(3,4,3,${rand(0.01, 0.08) * voice})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${e.palette.ink},${rand(0.01, 0.08) * voice})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.12, 1.2), 0, Math.PI * 2); ctx.fill()
     }
     if (dryness > 0.4) {
@@ -267,6 +296,7 @@ function App() {
     const e = engine.current
     if (e.state !== 'LIVE') return
     e.pointerDown = true
+    e.cursor = { x: event.clientX, y: event.clientY }
     e.lastPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5 }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
@@ -274,6 +304,7 @@ function App() {
     const e = engine.current
     if (e.state !== 'LIVE' || !e.pointerDown || !e.lastPoint) return
     const point = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5 }
+    e.cursor = point
     const distance = Math.hypot(point.x - e.lastPoint.x, point.y - e.lastPoint.y)
     if (distance < 0.5) return
     const steps = Math.min(8, Math.max(1, Math.ceil(distance / 5)))
@@ -289,7 +320,7 @@ function App() {
   const reset = () => {
     const e = engine.current
     setEndOpen(false); makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
-    setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setError('')
+    setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setFeatures({ low: 0, mid: 0, high: 0, flux: 0 }); setError('')
   }
 
   const hint = phase === 'live' ? 'LEVEZ · REPRENEZ · PARLEZ · SOUFFLEZ' : phase === 'drying' ? 'NE TOUCHEZ PLUS' : phase === 'finished' ? 'UNE MINUTE DE VOIX · UNE EMPREINTE' : 'VOIX = MATIÈRE · GESTE = FORME'
@@ -301,6 +332,14 @@ function App() {
         <span className="brand-mark" aria-hidden="true">声</span>
         <span><strong>Koe no Fude</strong><small>声の筆 · LE PINCEAU DE LA VOIX</small></span>
       </header>
+      <aside className="sound-panel" aria-label="Le son en matière">
+        <span className="panel-kicker">LE SON EN MATIÈRE</span>
+        {[['low', 'GRAVE', 'épaisseur'], ['mid', 'VOIX', 'mouvement'], ['high', 'AIGU', 'grain']].map(([key, label, effect]) => (
+          <div className="sound-row" key={key}>
+            <span>{label}</span><i><b style={{ transform: `scaleX(${0.06 + features[key] * .94})` }} /></i><em>{effect}</em>
+          </div>
+        ))}
+      </aside>
       <section className="controls" aria-live="polite">
         <button className="start-button" onClick={startSession} disabled={phase === 'live' || phase === 'drying'}>
           <span className="button-dot" />{phase === 'finished' ? 'TERMINÉ' : 'COMMENCER'}
@@ -314,6 +353,29 @@ function App() {
       {error && <p className="error-message">{error}</p>}
       <div className="edition"><span>EXPÉRIENCE SONORE</span><i /><span>ÉDITION 01</span></div>
       <p className="hint">{hint}</p>
+      <section className={`intro ${introOpen ? 'is-open' : ''}`} aria-hidden={!introOpen}>
+        <div className="intro-art" aria-hidden="true">
+          <span className="orbit orbit-one" /><span className="orbit orbit-two" />
+          <svg viewBox="0 0 600 760" role="presentation"><path d="M108 618 C 33 508, 161 464, 271 526 S 527 570, 494 422 C 466 296, 211 371, 173 236 C 139 116, 365 64, 451 177 C 535 286, 313 340, 286 197 C 271 119, 370 111, 394 172" /></svg>
+          <small>votre geste</small><small>le monde sonore</small>
+        </div>
+        <div className="intro-content">
+          <p className="intro-number">EXPÉRIENCE 01 <span>~ 60 SECONDES</span></p>
+          <h1>Le son<br />prend <i>trait.</i></h1>
+          <p className="intro-lead">Dessinez. Parlez, fredonnez, soufflez.<br />Le pinceau écoute et vous répond.</p>
+          <div className="legend">
+            <div><b>01</b><span>Votre geste<br /><em>donne la direction</em></span></div>
+            <div><b>02</b><span>Votre voix<br /><em>transforme la matière</em></span></div>
+            <div><b>03</b><span>L’ambiance<br /><em>laisse sa surprise</em></span></div>
+          </div>
+          <div className="palette-picker">
+            <span>CHOISISSEZ UNE MATIÈRE</span>
+            <div>{Object.entries(PALETTES).map(([key, value]) => <button key={key} className={palette === key ? 'active' : ''} onClick={() => choosePalette(key)} style={{ '--swatch': value.accent }}><i />{value.name}</button>)}</div>
+          </div>
+          <button className="enter-button" onClick={() => setIntroOpen(false)}>ENTRER DANS L’ATELIER <span>↗</span></button>
+          <p className="privacy">Votre micro reste ici. Aucun son n’est enregistré.</p>
+        </div>
+      </section>
       <div className={`end-overlay ${endOpen ? 'is-open' : ''}`} aria-hidden={!endOpen}>
         <section className="end-card" role="dialog" aria-modal="true" aria-labelledby="end-title">
           <span className="end-stamp">声</span>
