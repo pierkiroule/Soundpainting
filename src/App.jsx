@@ -3,19 +3,21 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const SESSION_DURATION = 60
 const FFT_SIZE = 2048
 const BRISTLE_COUNT = 620
-const PAPER = '#ebe6da'
+const PAPER = '#f2eee5'
 const TOOLS = [
-  { id: 'brush', label: 'Pinceau', glyph: '╱' },
-  { id: 'ribbon', label: 'Ruban', glyph: '≈' },
-  { id: 'spray', label: 'Souffle', glyph: '⁙' },
-  { id: 'pulse', label: 'Onde', glyph: '◉' },
+  { id: 'brush', label: 'Lavis', glyph: '◒' },
+  { id: 'ribbon', label: 'Nappe', glyph: '≈' },
+  { id: 'spray', label: 'Brume', glyph: '⁙' },
+  { id: 'pulse', label: 'Éclosion', glyph: '◌' },
   { id: 'eraser', label: 'Gomme', glyph: '◇' },
 ]
 const INKS = [
-  { id: 'sumi', label: 'Sumi', rgb: '10,12,11', hex: '#0a0c0b' },
-  { id: 'indigo', label: 'Indigo', rgb: '29,47,68', hex: '#1d2f44' },
-  { id: 'vermilion', label: 'Vermillon', rgb: '145,49,34', hex: '#913122' },
-  { id: 'moss', label: 'Mousse', rgb: '52,70,53', hex: '#344635' },
+  { id: 'sakura', label: 'Pétale', rgb: '212,139,143', hex: '#d48b8f' },
+  { id: 'wisteria', label: 'Glycine', rgb: '132,132,169', hex: '#8484a9' },
+  { id: 'mist', label: 'Brume', rgb: '116,158,161', hex: '#749ea1' },
+  { id: 'moss', label: 'Mousse', rgb: '128,145,111', hex: '#80916f' },
+  { id: 'ochre', label: 'Pollen', rgb: '202,164,102', hex: '#caa466' },
+  { id: 'sumi', label: 'Sumi doux', rgb: '74,72,75', hex: '#4a484b' },
 ]
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value))
@@ -69,15 +71,20 @@ function App() {
     ctx.globalCompositeOperation = 'source-over'
     ctx.fillStyle = PAPER
     ctx.fillRect(0, 0, e.width, e.height)
-    for (let i = 0; i < (e.width * e.height) / 210; i += 1) {
+    const wash = ctx.createRadialGradient(e.width * .52, e.height * .42, 0, e.width * .52, e.height * .42, Math.max(e.width, e.height) * .72)
+    wash.addColorStop(0, 'rgba(255,253,247,.34)')
+    wash.addColorStop(1, 'rgba(214,202,183,.12)')
+    ctx.fillStyle = wash
+    ctx.fillRect(0, 0, e.width, e.height)
+    for (let i = 0; i < (e.width * e.height) / 145; i += 1) {
       const x = Math.random() * e.width
       const y = Math.random() * e.height
       const angle = Math.random() * Math.PI
-      const length = rand(2, 20)
+      const length = rand(3, 28)
       ctx.strokeStyle = Math.random() > 0.5
-        ? `rgba(70,58,40,${rand(0.006, 0.022)})`
-        : `rgba(255,255,250,${rand(0.025, 0.07)})`
-      ctx.lineWidth = rand(0.12, 0.4)
+        ? `rgba(92,76,59,${rand(0.008, 0.026)})`
+        : `rgba(255,255,250,${rand(0.03, 0.09)})`
+      ctx.lineWidth = rand(0.12, 0.55)
       ctx.beginPath()
       ctx.moveTo(x, y)
       ctx.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length)
@@ -242,31 +249,35 @@ function App() {
       for (let i = 0; i < particles; i += 1) {
         const along = Math.random(), radius = Math.abs(gaussian()) * width * (0.35 + f.noise)
         const angle = Math.random() * Math.PI * 2
-        ctx.fillStyle = `rgba(${ink.rgb},${rand(0.02, 0.13) * (0.35 + voice)})`; ctx.beginPath()
+        ctx.fillStyle = `rgba(${ink.rgb},${rand(0.018, 0.1) * (0.4 + voice)})`; ctx.beginPath()
         ctx.arc(lerp(a.x, b.x, along) + Math.cos(angle) * radius, lerp(a.y, b.y, along) + Math.sin(angle) * radius, rand(.25, 1.5 + f.high * 2), 0, Math.PI * 2); ctx.fill()
       }
       return
     }
     if (tool === 'pulse') {
       if (Math.random() < .18 + f.flux * .5) {
-        ctx.save(); ctx.strokeStyle = `rgba(${ink.rgb},${.08 + voice * .28})`; ctx.lineWidth = .5 + f.high * 2
-        ctx.beginPath(); ctx.arc(b.x, b.y, 4 + width * (.25 + f.low), 0, Math.PI * 2); ctx.stroke(); ctx.restore()
+        const bloom = 5 + width * (.3 + f.low)
+        for (let ring = 0; ring < 4; ring += 1) {
+          ctx.save(); ctx.strokeStyle = `rgba(${ink.rgb},${(.07 + voice * .18) / (ring + 1)})`; ctx.lineWidth = 1.4 + ring * 2.2
+          ctx.beginPath(); ctx.arc(b.x + gaussian() * ring, b.y + gaussian() * ring, bloom + ring * 2.5, 0, Math.PI * 2); ctx.stroke(); ctx.restore()
+        }
       }
       return
     }
     if (tool === 'ribbon') {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${.035 + voice * .2})`
-      ctx.lineWidth = Math.max(2, width * .34); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
-      ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
+      for (let layer = 0; layer < 4; layer += 1) {
+        ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${(.025 + voice * .11) / (1 + layer * .32)})`
+        ctx.lineWidth = Math.max(3, width * (.5 + layer * .08)); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
+        ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
+      }
       return
     }
-    if (voice > 0.025) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${0.003 + voice * 0.018})`; ctx.lineWidth = width * 1.32
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore()
-    }
-    if (voice > 0.018) {
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${0.008 + voice * 0.085})`; ctx.lineWidth = width * 0.58
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * gaussian() * f.mid * 4, (a.y + b.y) / 2 + ny * gaussian() * f.mid * 4, b.x, b.y); ctx.stroke(); ctx.restore()
+    const pigment = .035 + voice * .12
+    for (let layer = 0; layer < 5; layer += 1) {
+      const drift = gaussian() * width * .045
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${pigment / (1 + layer * .42)})`; ctx.lineWidth = width * (1.18 - layer * .12)
+      ctx.beginPath(); ctx.moveTo(a.x + nx * drift, a.y + ny * drift)
+      ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * (drift + gaussian() * f.mid * 3), (a.y + b.y) / 2 + ny * (drift + gaussian() * f.mid * 3), b.x + nx * drift, b.y + ny * drift); ctx.stroke(); ctx.restore()
     }
     for (let i = 0; i < e.bristles.length; i += 2) {
       const bristle = e.bristles[i]
@@ -280,7 +291,7 @@ function App() {
       const ax = a.x + nx * (spread + deformation) + tx * bend
       const ay = a.y + ny * (spread + deformation) + ty * bend
       const bx = b.x + nx * (spread + deformation), by = b.y + ny * (spread + deformation)
-      ctx.strokeStyle = `rgba(${ink.rgb},${(0.006 + activation * 0.16) * (1 - dryness * 0.5)})`
+      ctx.strokeStyle = `rgba(${ink.rgb},${(0.012 + activation * 0.13) * (1 - dryness * 0.45)})`
       ctx.lineWidth = bristle.width * (0.35 + spectral * 1.5)
       ctx.beginPath(); ctx.moveTo(ax + gaussian() * 0.2, ay + gaussian() * 0.2)
       ctx.quadraticCurveTo((ax + bx) / 2 + nx * oscillation * f.high * 4, (ay + by) / 2 + ny * oscillation * f.high * 4, bx, by); ctx.stroke()
@@ -288,12 +299,12 @@ function App() {
     const breath = f.noise * (0.3 + f.high * 0.7) * voice
     for (let i = 0; i < Math.floor(breath * 32); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * (0.3 + breath * 0.8)
-      ctx.fillStyle = `rgba(20,20,17,${rand(0.006, 0.045)})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${ink.rgb},${rand(0.006, 0.038)})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.15, 1.8), 0, Math.PI * 2); ctx.fill()
     }
     for (let i = 0; i < Math.floor(voice * 18 + f.mid * 10); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * 0.27
-      ctx.fillStyle = `rgba(3,4,3,${rand(0.01, 0.08) * voice})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${ink.rgb},${rand(0.01, 0.07) * (.35 + voice)})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.12, 1.2), 0, Math.PI * 2); ctx.fill()
     }
     if (dryness > 0.4) {
@@ -380,7 +391,7 @@ function App() {
           <label htmlFor="brush-size"><span>ÉPAISSEUR</span><b>{Math.round(brushSize * 100)}</b></label>
           <input id="brush-size" type="range" min="0.45" max="1.8" step="0.05" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
         </div>
-        <div className="ink-control"><span>ENCRES</span><div>{INKS.map((color) => <button key={color.id} className={ink.id === color.id ? 'active' : ''} style={{ '--ink': color.hex }} onClick={() => setInk(color)} aria-label={color.label} title={color.label} />)}</div></div>
+        <div className="ink-control"><span>PIGMENTS</span><div>{INKS.map((color) => <button key={color.id} className={ink.id === color.id ? 'active' : ''} style={{ '--ink': color.hex }} onClick={() => setInk(color)} aria-label={color.label} title={color.label} />)}</div></div>
       </aside>
       <section className="controls" aria-live="polite">
         <button className="start-button" onClick={startSession} disabled={phase === 'live' || phase === 'drying'}>
