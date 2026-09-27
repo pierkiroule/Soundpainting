@@ -52,6 +52,7 @@ function App() {
     frequency: null, waveform: null, spectrum: null, lastSpectrum: null, features: null,
     bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
     animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
+    previewContext: null, gesture: null, recorder: null, recorderChunks: [], samples: [],
   })
   const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
@@ -63,6 +64,9 @@ function App() {
   const [ink, setInk] = useState(INKS[0])
   const [brushSize, setBrushSize] = useState(1)
   const [hasMarks, setHasMarks] = useState(false)
+  const [sampleCount, setSampleCount] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const previewRef = useRef(null)
 
   const makePaper = useCallback(() => {
     const e = engine.current
@@ -96,13 +100,17 @@ function App() {
     const canvas = canvasRef.current
     const e = engine.current
     e.context = canvas.getContext('2d', { alpha: false, desynchronized: true })
+    e.previewContext = previewRef.current.getContext('2d', { alpha: true, desynchronized: true })
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       e.width = window.innerWidth
       e.height = window.innerHeight
       canvas.width = e.width * dpr
       canvas.height = e.height * dpr
+      previewRef.current.width = e.width * dpr
+      previewRef.current.height = e.height * dpr
       e.context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      e.previewContext.setTransform(dpr, 0, 0, dpr, 0, 0)
       makePaper()
     }
     resize()
@@ -188,7 +196,7 @@ function App() {
     const elapsed = (now - e.startedAt) / 1000
     setProgress(clamp(elapsed / SESSION_DURATION))
     setEnergy(currentEnergy)
-    if (elapsed >= SESSION_DURATION) finishSession()
+    if (elapsed >= SESSION_DURATION && !e.pointerDown) finishSession()
     else e.animation = requestAnimationFrame(runLoop)
   }, [analyse, finishSession])
 
@@ -216,7 +224,7 @@ function App() {
       e.state = 'LIVE'
       e.startedAt = performance.now()
       setPhase('live')
-      setStatus('Écoutez · tracez')
+      setStatus('Touchez · jouez · fixez')
       setEndOpen(false)
       runLoop()
     } catch (err) {
@@ -226,47 +234,50 @@ function App() {
     }
   }
 
-  const paint = (a, b) => {
+  const paint = (a, b, target, recordedStyle, recordedFeatures) => {
     const e = engine.current
-    const f = e.features
+    const f = recordedFeatures || e.features
     if (!f) return
-    const ctx = e.context
+    const ctx = target || e.context
+    const activeTool = recordedStyle?.tool || tool
+    const activeInk = recordedStyle?.ink || ink
+    const activeSize = recordedStyle?.brushSize || brushSize
     const dx = b.x - a.x, dy = b.y - a.y
     const length = Math.hypot(dx, dy)
     if (!length) return
     const tx = dx / length, ty = dy / length, nx = -ty, ny = tx
     const velocity = length / Math.max(1, b.time - a.time)
     const voice = clamp((f.energy - 0.012) * 1.4)
-    const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7) * brushSize
+    const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7) * activeSize
     const dryness = clamp(0.25 + velocity * 0.28 + f.noise * 0.16 + (1 - f.energy) * 0.28 - f.low * 0.12)
     ctx.lineCap = 'round'
-    if (tool === 'eraser') {
+    if (activeTool === 'eraser') {
       ctx.save(); ctx.strokeStyle = PAPER; ctx.lineWidth = Math.max(18, width * 1.25); ctx.globalAlpha = 0.92
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore(); return
     }
-    if (tool === 'spray') {
+    if (activeTool === 'spray') {
       const particles = Math.floor(8 + voice * 65 + f.high * 22)
       for (let i = 0; i < particles; i += 1) {
         const along = Math.random(), radius = Math.abs(gaussian()) * width * (0.35 + f.noise)
         const angle = Math.random() * Math.PI * 2
-        ctx.fillStyle = `rgba(${ink.rgb},${rand(0.018, 0.1) * (0.4 + voice)})`; ctx.beginPath()
+        ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.018, 0.1) * (0.4 + voice)})`; ctx.beginPath()
         ctx.arc(lerp(a.x, b.x, along) + Math.cos(angle) * radius, lerp(a.y, b.y, along) + Math.sin(angle) * radius, rand(.25, 1.5 + f.high * 2), 0, Math.PI * 2); ctx.fill()
       }
       return
     }
-    if (tool === 'pulse') {
+    if (activeTool === 'pulse') {
       if (Math.random() < .18 + f.flux * .5) {
         const bloom = 5 + width * (.3 + f.low)
         for (let ring = 0; ring < 4; ring += 1) {
-          ctx.save(); ctx.strokeStyle = `rgba(${ink.rgb},${(.07 + voice * .18) / (ring + 1)})`; ctx.lineWidth = 1.4 + ring * 2.2
+          ctx.save(); ctx.strokeStyle = `rgba(${activeInk.rgb},${(.07 + voice * .18) / (ring + 1)})`; ctx.lineWidth = 1.4 + ring * 2.2
           ctx.beginPath(); ctx.arc(b.x + gaussian() * ring, b.y + gaussian() * ring, bloom + ring * 2.5, 0, Math.PI * 2); ctx.stroke(); ctx.restore()
         }
       }
       return
     }
-    if (tool === 'ribbon') {
+    if (activeTool === 'ribbon') {
       for (let layer = 0; layer < 4; layer += 1) {
-        ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${(.025 + voice * .11) / (1 + layer * .32)})`
+        ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${activeInk.rgb},${(.025 + voice * .11) / (1 + layer * .32)})`
         ctx.lineWidth = Math.max(3, width * (.5 + layer * .08)); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
         ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
       }
@@ -275,7 +286,7 @@ function App() {
     const pigment = .035 + voice * .12
     for (let layer = 0; layer < 5; layer += 1) {
       const drift = gaussian() * width * .045
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${ink.rgb},${pigment / (1 + layer * .42)})`; ctx.lineWidth = width * (1.18 - layer * .12)
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${activeInk.rgb},${pigment / (1 + layer * .42)})`; ctx.lineWidth = width * (1.18 - layer * .12)
       ctx.beginPath(); ctx.moveTo(a.x + nx * drift, a.y + ny * drift)
       ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * (drift + gaussian() * f.mid * 3), (a.y + b.y) / 2 + ny * (drift + gaussian() * f.mid * 3), b.x + nx * drift, b.y + ny * drift); ctx.stroke(); ctx.restore()
     }
@@ -291,7 +302,7 @@ function App() {
       const ax = a.x + nx * (spread + deformation) + tx * bend
       const ay = a.y + ny * (spread + deformation) + ty * bend
       const bx = b.x + nx * (spread + deformation), by = b.y + ny * (spread + deformation)
-      ctx.strokeStyle = `rgba(${ink.rgb},${(0.012 + activation * 0.13) * (1 - dryness * 0.45)})`
+      ctx.strokeStyle = `rgba(${activeInk.rgb},${(0.012 + activation * 0.13) * (1 - dryness * 0.45)})`
       ctx.lineWidth = bristle.width * (0.35 + spectral * 1.5)
       ctx.beginPath(); ctx.moveTo(ax + gaussian() * 0.2, ay + gaussian() * 0.2)
       ctx.quadraticCurveTo((ax + bx) / 2 + nx * oscillation * f.high * 4, (ay + by) / 2 + ny * oscillation * f.high * 4, bx, by); ctx.stroke()
@@ -299,12 +310,12 @@ function App() {
     const breath = f.noise * (0.3 + f.high * 0.7) * voice
     for (let i = 0; i < Math.floor(breath * 32); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * (0.3 + breath * 0.8)
-      ctx.fillStyle = `rgba(${ink.rgb},${rand(0.006, 0.038)})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.006, 0.038)})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.15, 1.8), 0, Math.PI * 2); ctx.fill()
     }
     for (let i = 0; i < Math.floor(voice * 18 + f.mid * 10); i += 1) {
       const along = Math.random(), lateral = gaussian() * width * 0.27
-      ctx.fillStyle = `rgba(${ink.rgb},${rand(0.01, 0.07) * (.35 + voice)})`; ctx.beginPath()
+      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.01, 0.07) * (.35 + voice)})`; ctx.beginPath()
       ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.12, 1.2), 0, Math.PI * 2); ctx.fill()
     }
     if (dryness > 0.4) {
@@ -318,51 +329,110 @@ function App() {
     }
   }
 
+  const decodeRecording = async (chunks, sample) => {
+    if (!chunks.length) return
+    try {
+      const encoded = await new Blob(chunks).arrayBuffer()
+      const decoded = await engine.current.audioContext.decodeAudioData(encoded)
+      const frames = Math.min(decoded.length, Math.floor(decoded.sampleRate * 2))
+      const clipped = engine.current.audioContext.createBuffer(decoded.numberOfChannels, frames, decoded.sampleRate)
+      for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+        clipped.copyToChannel(decoded.getChannelData(channel).slice(decoded.length - frames), channel)
+      }
+      sample.audio = clipped
+    } catch (recordingError) {
+      console.warn('Échantillon audio non décodable', recordingError)
+    }
+  }
+
+  const renderGesture = (gesture) => {
+    const e = engine.current
+    e.previewContext.clearRect(0, 0, e.width, e.height)
+    for (let index = 1; index < gesture.points.length; index += 1) {
+      paint(gesture.points[index - 1], gesture.points[index], e.previewContext, gesture.style, gesture.points[index].features)
+    }
+  }
+
   const pointerDown = (event) => {
     const e = engine.current
-    if (e.state !== 'LIVE') return
+    if (e.state !== 'LIVE' || isPlaying) return
     try {
-      e.history.push(e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height))
+      e.history.push({ pixels: e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height), sampleCount: e.samples.length })
       if (e.history.length > 8) e.history.shift()
     } catch { e.history = [] }
     e.pointerDown = true
     setHasMarks(true)
-    e.lastPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5 }
+    const firstPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
+    e.lastPoint = firstPoint
+    e.gesture = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, points: [firstPoint], style: { tool, ink, brushSize } }
+    e.recorderChunks = []
+    if (typeof MediaRecorder !== 'undefined' && e.stream) {
+      try {
+        e.recorder = new MediaRecorder(e.stream)
+        e.recorder.ondataavailable = ({ data }) => { if (data.size) e.recorderChunks.push(data) }
+        e.recorder.start(100)
+      } catch (recordingError) { console.warn('Enregistrement indisponible', recordingError) }
+    }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
   const pointerMove = (event) => {
     const e = engine.current
     if (e.state !== 'LIVE' || !e.pointerDown || !e.lastPoint) return
-    const point = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5 }
+    const point = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
     const distance = Math.hypot(point.x - e.lastPoint.x, point.y - e.lastPoint.y)
     if (distance < 0.5) return
     const steps = Math.min(8, Math.max(1, Math.ceil(distance / 5)))
-    let previous = e.lastPoint
     for (let i = 1; i <= steps; i += 1) {
       const t = i / steps
-      const next = { x: lerp(e.lastPoint.x, point.x, t), y: lerp(e.lastPoint.y, point.y, t), time: lerp(e.lastPoint.time, point.time, t), pressure: lerp(e.lastPoint.pressure, point.pressure, t) }
-      paint(previous, next); previous = next
+      const next = { x: lerp(e.lastPoint.x, point.x, t), y: lerp(e.lastPoint.y, point.y, t), time: lerp(e.lastPoint.time, point.time, t), pressure: lerp(e.lastPoint.pressure, point.pressure, t), features: point.features }
+      e.gesture.points.push(next)
     }
+    const cutoff = point.time - 2000
+    const firstVisible = Math.max(0, e.gesture.points.findIndex((item) => item.time >= cutoff) - 1)
+    if (firstVisible > 0) e.gesture.points.splice(0, firstVisible)
+    renderGesture(e.gesture)
     e.lastPoint = point
   }
-  const lift = () => { engine.current.pointerDown = false; engine.current.lastPoint = null }
+  const lift = () => {
+    const e = engine.current
+    if (!e.pointerDown || !e.gesture) return
+    e.pointerDown = false; e.lastPoint = null
+    const gesture = e.gesture
+    if (gesture.points.length < 2) {
+      if (e.recorder?.state === 'recording') e.recorder.stop()
+      e.gesture = null; e.recorder = null; return
+    }
+    gesture.duration = Math.max(120, gesture.points.at(-1).time - gesture.points[0].time)
+    e.context.drawImage(previewRef.current, 0, 0, previewRef.current.width, previewRef.current.height, 0, 0, e.width, e.height)
+    e.previewContext.clearRect(0, 0, e.width, e.height)
+    const sample = { ...gesture, audio: null }
+    e.samples.push(sample); setSampleCount(e.samples.length)
+    if (e.recorder?.state === 'recording') {
+      const chunks = e.recorderChunks
+      e.recorder.onstop = () => decodeRecording(chunks, sample)
+      e.recorder.stop()
+    }
+    e.gesture = null; e.recorder = null
+  }
   const reset = () => {
     const e = engine.current
     setEndOpen(false); makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
-    e.history = []; setHasMarks(false)
+    e.history = []; e.samples = []; setHasMarks(false); setSampleCount(0)
     setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setError('')
   }
 
   const undo = () => {
     const e = engine.current
     const previous = e.history.pop()
-    if (previous) e.context.putImageData(previous, 0, 0)
-    setHasMarks(e.history.length > 0)
+    if (previous) e.context.putImageData(previous.pixels, 0, 0)
+    if (previous) e.samples.splice(previous.sampleCount)
+    setSampleCount(e.samples.length)
+    setHasMarks(Boolean(previous?.sampleCount))
   }
 
   const clearPaper = () => {
     const e = engine.current
-    if (hasMarks) e.history.push(e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height))
+    if (hasMarks) e.history.push({ pixels: e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height), sampleCount: e.samples.length })
     makePaper(); setHasMarks(e.history.length > 0)
   }
 
@@ -373,11 +443,41 @@ function App() {
     link.click()
   }
 
-  const hint = phase === 'live' ? 'LEVEZ · REPRENEZ · PARLEZ · SOUFFLEZ' : phase === 'drying' ? 'NE TOUCHEZ PLUS' : phase === 'finished' ? 'UNE MINUTE DE VOIX · UNE EMPREINTE' : 'VOIX = MATIÈRE · GESTE = FORME'
+  const replay = async () => {
+    const e = engine.current
+    if (!e.samples.length || isPlaying) return
+    setIsPlaying(true); setStatus('Relecture des gestes')
+    await e.audioContext?.resume()
+    makePaper(); e.history = []
+    for (const sample of e.samples) {
+      if (sample.audio && e.audioContext) {
+        const source = e.audioContext.createBufferSource()
+        source.buffer = sample.audio; source.connect(e.audioContext.destination); source.start()
+      }
+      await new Promise((resolve) => {
+        const started = performance.now()
+        let rendered = 1
+        const frame = (now) => {
+          const elapsed = now - started
+          while (rendered < sample.points.length && sample.points[rendered].time - sample.points[0].time <= elapsed) {
+            paint(sample.points[rendered - 1], sample.points[rendered], e.context, sample.style, sample.points[rendered].features)
+            rendered += 1
+          }
+          if (elapsed < sample.duration) requestAnimationFrame(frame)
+          else resolve()
+        }
+        requestAnimationFrame(frame)
+      })
+    }
+    setHasMarks(true); setIsPlaying(false); setStatus(e.state === 'LIVE' ? 'Touchez · jouez · fixez' : 'Séquence terminée')
+  }
+
+  const hint = isPlaying ? 'VOS GESTES REPRENNENT VIE' : phase === 'live' ? 'MAINTENEZ · JOUEZ 2 SECONDES · RELÂCHEZ POUR FIXER' : phase === 'drying' ? 'NE TOUCHEZ PLUS' : phase === 'finished' ? 'UNE MINUTE DE VOIX · UNE EMPREINTE' : 'VOIX = MATIÈRE · GESTE = FORME'
 
   return (
     <main className={`app phase-${phase}`}>
       <canvas ref={canvasRef} className="paper" aria-label="Surface de dessin réactive à la voix" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={lift} onPointerCancel={lift} />
+      <canvas ref={previewRef} className="paper live-layer" aria-hidden="true" />
       <header className="brand" aria-label="Koe no Fude">
         <span className="brand-mark" aria-hidden="true">声</span>
         <span><strong>Koe no Fude</strong><small>声の筆 · LE PINCEAU DE LA VOIX</small></span>
@@ -404,6 +504,7 @@ function App() {
         </div>
       </section>
       <nav className="canvas-actions" aria-label="Actions de la toile">
+        <button className="replay-button" onClick={replay} disabled={!sampleCount || isPlaying} title="Rejouer les gestes"><span>▶</span> REJOUER <b>{sampleCount}</b></button>
         <button onClick={undo} disabled={!hasMarks} title="Annuler"><span>↶</span> ANNULER</button>
         <button onClick={clearPaper} disabled={!hasMarks} title="Effacer la toile"><span>×</span> EFFACER</button>
         <button onClick={download} title="Exporter l’œuvre"><span>↓</span> EXPORTER</button>

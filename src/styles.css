@@ -9,6 +9,7 @@ button { font: inherit; }
 .app::before { content: ''; position: fixed; z-index: 2; top: 14%; right: 12%; width: min(24vw, 290px); aspect-ratio: 1; border-radius: 50%; background: rgba(211,142,135,.08); box-shadow: 0 0 80px rgba(211,142,135,.06); pointer-events: none; }
 .app::after { content: ''; position: fixed; z-index: 2; inset: 0; opacity: .28; background-image: repeating-linear-gradient(7deg, transparent 0 5px, rgba(106,87,68,.025) 6px, transparent 7px), radial-gradient(circle at 20% 30%, rgba(79,64,52,.13) 0 .45px, transparent .7px); background-size: auto, 9px 11px; mix-blend-mode: multiply; pointer-events: none; }
 .paper { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+.live-layer { z-index: 1; pointer-events: none; }
 .brand { position: fixed; z-index: 4; top: max(28px, env(safe-area-inset-top)); left: 34px; display: flex; align-items: center; gap: 13px; pointer-events: none; }
 .brand-mark { width: 39px; height: 39px; display: grid; place-items: center; border: 1px solid rgba(180,91,79,.65); color: #b45b4f; font-family: serif; font-size: 21px; transform: rotate(-2deg); }
 .brand strong { display: block; font-family: Italiana, Georgia, serif; font-size: 20px; font-weight: 400; letter-spacing: .03em; line-height: 1; }
@@ -49,6 +50,9 @@ button { font: inherit; }
 .canvas-actions button:hover:not(:disabled) { color: #fffaf4; background: #b98284; }
 .canvas-actions button:disabled { opacity: .3; cursor: default; }
 .canvas-actions button span { margin-right: 6px; font-size: 13px; vertical-align: -1px; }
+.canvas-actions .replay-button { color: #fffaf4; background: #7d9291; }
+.canvas-actions .replay-button:hover:not(:disabled) { background: #6d8281; }
+.canvas-actions .replay-button b { display: inline-grid; width: 16px; height: 16px; margin-left: 6px; place-items: center; border-radius: 50%; color: #687b7a; background: #f6f0e7; font-size: 7px; }
 .sound-legend { position: fixed; z-index: 3; top: 50%; right: 32px; display: flex; flex-direction: column; align-items: center; gap: 7px; transform: translateY(-50%); color: rgba(28,27,23,.35); font: 500 6px DM Mono, monospace; letter-spacing: .13em; writing-mode: vertical-rl; pointer-events: none; }
 .sound-legend i { width: 1px; height: 18px; background: rgba(28,27,23,.15); }
 .sound-legend i:nth-of-type(2) { height: 28px; }.sound-legend i:nth-of-type(3) { height: 38px; }.sound-legend i:nth-of-type(4) { height: 52px; transform-origin: top; background: #d18e91; transition: transform 80ms linear; }
