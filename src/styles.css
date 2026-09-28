@@ -36,6 +36,12 @@ button { font: inherit; }
 .start-button:hover:not(:disabled) { transform: translateY(-1px); }
 .start-button:disabled { opacity: .34; cursor: default; }
 .button-dot { display: inline-block; width: 5px; height: 5px; margin-right: 9px; border-radius: 50%; background: #e4b18d; vertical-align: 1px; }
+.audio-import { min-height: 39px; padding: 0 12px; border: 1px solid rgba(105,91,79,.14); border-radius: 16px; color: rgba(55,51,48,.62); background: rgba(255,255,255,.26); font: 600 8px DM Mono, monospace; letter-spacing: .1em; cursor: pointer; }
+.audio-import:hover:not(:disabled) { color: #fffaf4; background: #b98284; }
+.audio-import:disabled { opacity: .3; cursor: default; }
+.audio-import span { margin-right: 5px; font-size: 13px; vertical-align: -1px; }
+.audio-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.source-chip { max-width: 92px; overflow: hidden; color: rgba(55,51,48,.38); font: 500 6px DM Mono, monospace; letter-spacing: .08em; text-overflow: ellipsis; white-space: nowrap; }
 .voice-orb { width: 37px; height: 37px; display: grid; place-items: center; }
 .voice-orb::before { content: ''; position: absolute; width: 32px; height: 32px; border: 1px solid rgba(20,20,18,.11); border-radius: 50%; }
 .voice-orb span { width: 13px; height: 13px; border-radius: 50%; background: #1b1b17; transition: transform 80ms linear; }
@@ -85,6 +91,9 @@ button { font: inherit; }
   .brand strong { font-size: 16px; }
   .controls { top: max(14px, env(safe-area-inset-top)); width: calc(100% - 24px); }
   .start-button { padding: 0 13px; }
+  .audio-import { width: 39px; padding: 0; font-size: 0; }
+  .audio-import span { margin: 0; font-size: 15px; }
+  .source-chip { display: none; }
   .session-info { flex: 1; width: auto; }
   .edition { display: none; }
   .hint { bottom: max(20px, env(safe-area-inset-bottom)); font-size: 7px; }

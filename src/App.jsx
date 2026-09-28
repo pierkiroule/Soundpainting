@@ -56,7 +56,8 @@ function App() {
     bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
     animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
     previewContext: null, gesture: null, recorder: null, recorderChunks: [], samples: [],
-    trailLayers: [], dpr: 1, composeAnimation: null,
+    trailLayers: [], dpr: 1, composeAnimation: null, importedBuffer: null,
+    importedStartedAt: 0, playbackSource: null, sessionDuration: SESSION_DURATION,
   })
   const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
@@ -71,6 +72,8 @@ function App() {
   const [sampleCount, setSampleCount] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const previewRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const [sourceName, setSourceName] = useState('MICROPHONE')
 
   const makePaper = useCallback(() => {
     const e = engine.current
@@ -185,10 +188,12 @@ function App() {
 
   const finishSession = useCallback(() => {
     const e = engine.current
+    if (e.state !== 'LIVE') return
     e.state = 'DRYING'
     e.pointerDown = false
     e.lastPoint = null
     e.stream?.getTracks().forEach((track) => track.stop())
+    try { e.playbackSource?.stop() } catch { /* source déjà terminée */ }
     setPhase('drying')
     setStatus("L'encre se pose")
     setProgress(1)
@@ -219,9 +224,9 @@ function App() {
     if (e.state !== 'LIVE') return
     const currentEnergy = analyse()
     const elapsed = (now - e.startedAt) / 1000
-    setProgress(clamp(elapsed / SESSION_DURATION))
+    setProgress(clamp(elapsed / e.sessionDuration))
     setEnergy(currentEnergy)
-    if (elapsed >= SESSION_DURATION && !e.pointerDown) finishSession()
+    if (elapsed >= e.sessionDuration && !e.pointerDown) finishSession()
     else e.animation = requestAnimationFrame(runLoop)
   }, [analyse, finishSession])
 
@@ -230,6 +235,8 @@ function App() {
     if (e.state === 'LIVE') return
     setError('')
     try {
+      try { e.playbackSource?.stop() } catch { /* aucune lecture active */ }
+      e.playbackSource = null
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone indisponible')
       e.audioContext ||= new AudioContext()
       await e.audioContext.resume()
@@ -237,6 +244,7 @@ function App() {
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       })
       const source = e.audioContext.createMediaStreamSource(e.stream)
+      e.importedBuffer = null; e.sessionDuration = SESSION_DURATION; setSourceName('MICROPHONE')
       e.analyser = e.audioContext.createAnalyser()
       e.analyser.fftSize = FFT_SIZE
       e.analyser.smoothingTimeConstant = 0.1
@@ -256,6 +264,42 @@ function App() {
       console.error(err)
       setStatus('Micro non disponible')
       setError("Autorisez l'accès au microphone pour commencer.")
+    }
+  }
+
+  const importAudio = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const e = engine.current
+    setError(''); setStatus('Préparation du fichier')
+    try {
+      e.stream?.getTracks().forEach((track) => track.stop()); e.stream = null
+      e.playbackSource?.stop()
+      e.audioContext ||= new AudioContext()
+      await e.audioContext.resume()
+      const buffer = await e.audioContext.decodeAudioData(await file.arrayBuffer())
+      const source = e.audioContext.createBufferSource()
+      const analyser = e.audioContext.createAnalyser()
+      analyser.fftSize = FFT_SIZE; analyser.smoothingTimeConstant = .1
+      source.buffer = buffer; source.connect(analyser); source.connect(e.audioContext.destination)
+      e.analyser = analyser; e.playbackSource = source; e.importedBuffer = buffer
+      e.frequency = new Uint8Array(analyser.frequencyBinCount)
+      e.waveform = new Uint8Array(analyser.fftSize)
+      e.spectrum = new Float32Array(analyser.frequencyBinCount)
+      e.lastSpectrum = new Float32Array(analyser.frequencyBinCount)
+      e.bristles = createBristles(analyser.frequencyBinCount)
+      e.sessionDuration = Math.min(SESSION_DURATION, buffer.duration)
+      e.startedAt = performance.now(); e.importedStartedAt = e.audioContext.currentTime
+      e.state = 'LIVE'; setPhase('live'); setProgress(0); setEndOpen(false)
+      setSourceName(file.name.replace(/\.(mp3|wav)$/i, '').slice(0, 18).toUpperCase())
+      setStatus('Fichier · touchez · tracez')
+      source.start(); source.onended = () => { if (e.state === 'LIVE' && !e.pointerDown) finishSession() }
+      runLoop()
+    } catch (importError) {
+      console.error(importError)
+      setError('Ce fichier audio ne peut pas être lu. Choisissez un MP3 ou un WAV valide.')
+      setStatus('Import impossible')
     }
   }
 
@@ -418,6 +462,20 @@ function App() {
     }
   }
 
+  const captureImportedAudio = (sample) => {
+    const e = engine.current
+    if (!e.importedBuffer || !e.audioContext) return
+    const endTime = clamp(e.audioContext.currentTime - e.importedStartedAt, 0, e.importedBuffer.duration)
+    const duration = Math.min(2, sample.duration / 1000, endTime)
+    const startFrame = Math.floor((endTime - duration) * e.importedBuffer.sampleRate)
+    const frames = Math.max(1, Math.floor(duration * e.importedBuffer.sampleRate))
+    const clipped = e.audioContext.createBuffer(e.importedBuffer.numberOfChannels, frames, e.importedBuffer.sampleRate)
+    for (let channel = 0; channel < e.importedBuffer.numberOfChannels; channel += 1) {
+      clipped.copyToChannel(e.importedBuffer.getChannelData(channel).slice(startFrame, startFrame + frames), channel)
+    }
+    sample.audio = clipped
+  }
+
   const paintLiveSegment = (a, b, gesture) => {
     const e = engine.current
     const bucket = Math.floor(b.time / TRAIL_SLICE)
@@ -509,7 +567,8 @@ function App() {
     e.previewContext.clearRect(0, 0, e.width, e.height)
     const sample = { ...gesture, audio: null }
     e.samples.push(sample); setSampleCount(e.samples.length)
-    if (e.recorder?.state === 'recording') {
+    if (e.importedBuffer) captureImportedAudio(sample)
+    else if (e.recorder?.state === 'recording') {
       const chunks = e.recorderChunks
       e.recorder.onstop = () => decodeRecording(chunks, sample)
       e.recorder.stop()
@@ -519,6 +578,8 @@ function App() {
   const reset = () => {
     const e = engine.current
     setEndOpen(false); makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
+    try { e.playbackSource?.stop() } catch { /* aucune lecture active */ }
+    e.playbackSource = null; e.importedBuffer = null; setSourceName('MICROPHONE')
     e.history = []; e.samples = []; setHasMarks(false); setSampleCount(0)
     setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setError('')
   }
@@ -603,12 +664,15 @@ function App() {
         <button className="start-button" onClick={startSession} disabled={phase === 'live' || phase === 'drying'}>
           <span className="button-dot" />{phase === 'finished' ? 'TERMINÉ' : 'COMMENCER'}
         </button>
+        <button className="audio-import" onClick={() => fileInputRef.current?.click()} disabled={phase === 'live' || phase === 'drying'} title="Importer un fichier MP3 ou WAV"><span>＋</span> AUDIO</button>
+        <input ref={fileInputRef} className="audio-file-input" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" onChange={importAudio} />
         <div className="voice-orb" aria-hidden="true"><span style={{ transform: `scale(${0.42 + energy * 1.5})`, opacity: 0.38 + energy * 0.62 }} /></div>
         <div className="spectral-signature" aria-hidden="true">{(engine.current.features?.bands || Array(SPECTRAL_BANDS).fill(0)).map((value, index) => <i key={index} style={{ transform: `scaleY(${.08 + value * .92})` }} />)}</div>
         <div className="session-info">
-          <div><span>{status}</span><span className="timer">{phase === 'live' ? `${Math.max(0, Math.ceil(60 - progress * 60))}s` : phase === 'finished' ? '60s' : '—'}</span></div>
+          <div><span>{status}</span><span className="timer">{phase === 'live' ? `${Math.max(0, Math.ceil(engine.current.sessionDuration * (1 - progress)))}s` : phase === 'finished' ? `${Math.ceil(engine.current.sessionDuration)}s` : '—'}</span></div>
           <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>
         </div>
+        <span className="source-chip" title={sourceName}>{sourceName}</span>
       </section>
       {sampleCount > 0 && <div className="sample-strip" aria-label={`${sampleCount} samples enregistrés`}>
         <span>SÉQUENCE</span>
