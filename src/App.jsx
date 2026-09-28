@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const SESSION_DURATION = 60
 const FFT_SIZE = 2048
-const BRISTLE_COUNT = 260
+const BRISTLE_COUNT = 180
+const SPECTRAL_BANDS = 12
 const TRAIL_LAYERS = 8
 const TRAIL_SLICE = 250
 const PAPER = '#f2eee5'
@@ -162,10 +163,22 @@ function App() {
       previous = value
     }
     const measuredEnergy = clamp(Math.sqrt(rms / e.waveform.length) * 5)
+    const bands = Array.from({ length: SPECTRAL_BANDS }, (_, band) => {
+      const start = Math.floor(Math.pow(band / SPECTRAL_BANDS, 1.8) * e.spectrum.length)
+      const end = Math.max(start + 1, Math.floor(Math.pow((band + 1) / SPECTRAL_BANDS, 1.8) * e.spectrum.length))
+      let sum = 0
+      for (let index = start; index < end; index += 1) sum += e.spectrum[index]
+      return clamp(sum / (end - start))
+    })
+    const bandTotal = bands.reduce((sum, value) => sum + value, 0)
+    const entropy = bandTotal ? -bands.reduce((sum, value) => {
+      const probability = value / bandTotal
+      return probability ? sum + probability * Math.log(probability) : sum
+    }, 0) / Math.log(SPECTRAL_BANDS) : 0
     e.features = {
       energy: measuredEnergy, low: clamp(low / 45), mid: clamp(mid / 110), high: clamp(high / 180),
       centroid: total ? weighted / total / e.frequency.length : 0,
-      flux: clamp(flux / 30), noise: clamp((zeroCross / e.waveform.length) * 15),
+      flux: clamp(flux / 30), noise: clamp((zeroCross / e.waveform.length) * 15), bands, entropy,
     }
     return measuredEnergy
   }, [])
@@ -293,6 +306,14 @@ function App() {
         ctx.lineWidth = Math.max(3, width * (.5 + layer * .08)); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
         ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
       }
+      const ribbonBands = f.bands || []
+      ribbonBands.forEach((level, band) => {
+        if (level < .035) return
+        const offset = (band / Math.max(1, ribbonBands.length - 1) - .5) * width * .62
+        ctx.strokeStyle = `rgba(${activeInk.rgb},${.018 + level * .14})`; ctx.lineWidth = .2 + level
+        ctx.beginPath(); ctx.moveTo(a.x + nx * offset, a.y + ny * offset)
+        ctx.quadraticCurveTo((a.x + b.x) / 2 - nx * offset * f.mid, (a.y + b.y) / 2 - ny * offset * f.mid, b.x + nx * offset, b.y + ny * offset); ctx.stroke()
+      })
       return
     }
     const pigment = .035 + voice * .12
@@ -301,6 +322,46 @@ function App() {
       ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${activeInk.rgb},${pigment / (1 + layer * .42)})`; ctx.lineWidth = width * (1.18 - layer * .12)
       ctx.beginPath(); ctx.moveTo(a.x + nx * drift, a.y + ny * drift)
       ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * (drift + gaussian() * f.mid * 3), (a.y + b.y) / 2 + ny * (drift + gaussian() * f.mid * 3), b.x + nx * drift, b.y + ny * drift); ctx.stroke(); ctx.restore()
+    }
+    // Chaque bande fréquentielle occupe une place stable dans la largeur du geste :
+    // les graves vivent sur un bord, les aigus sur l'autre, comme une empreinte du son.
+    const bands = f.bands || []
+    for (let band = 0; band < bands.length; band += 1) {
+      const level = bands[band]
+      if (level < .018) continue
+      const position = band / Math.max(1, bands.length - 1) - .5
+      const offset = position * width * (.72 + f.entropy * .28)
+      const vibration = Math.sin((b.time * .018) + band * 1.73) * level * width * (.035 + f.high * .08)
+      const ax = a.x + nx * (offset + vibration)
+      const ay = a.y + ny * (offset + vibration)
+      const bx = b.x + nx * (offset - vibration)
+      const by = b.y + ny * (offset - vibration)
+      ctx.save(); ctx.globalCompositeOperation = 'multiply'
+      ctx.strokeStyle = `rgba(${activeInk.rgb},${.025 + level * .19})`
+      ctx.lineWidth = .18 + level * (1.25 + band / bands.length)
+      ctx.beginPath(); ctx.moveTo(ax, ay)
+      ctx.quadraticCurveTo((ax + bx) / 2 + nx * vibration * 1.8, (ay + by) / 2 + ny * vibration * 1.8, bx, by)
+      ctx.stroke(); ctx.restore()
+      if (band > bands.length * .58 && level > .12 && Math.random() < level * .22) {
+        const along = Math.random()
+        const cx = lerp(ax, bx, along), cy = lerp(ay, by, along)
+        ctx.strokeStyle = `rgba(${activeInk.rgb},${.025 + level * .09})`; ctx.lineWidth = .35
+        ctx.beginPath(); ctx.moveTo(cx - nx * level * 7, cy - ny * level * 7); ctx.lineTo(cx + nx * level * 7, cy + ny * level * 7); ctx.stroke()
+      }
+    }
+    if (f.flux > .18 && Math.random() < f.flux * .2) {
+      const radius = width * (.18 + f.low * .32 + f.flux * .2)
+      const halo = ctx.createRadialGradient(b.x, b.y, radius * .35, b.x, b.y, radius)
+      halo.addColorStop(0, `rgba(${activeInk.rgb},0)`)
+      halo.addColorStop(.72, `rgba(${activeInk.rgb},${.018 + f.flux * .035})`)
+      halo.addColorStop(1, `rgba(${activeInk.rgb},0)`)
+      ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(b.x, b.y, radius, 0, Math.PI * 2); ctx.fill()
+    }
+    const sediment = Math.min(9, Math.floor((f.noise * .55 + f.entropy * .45) * 8))
+    for (let grain = 0; grain < sediment; grain += 1) {
+      const along = Math.random(), across = gaussian() * width * .3
+      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(.025, .09)})`; ctx.beginPath()
+      ctx.arc(lerp(a.x, b.x, along) + nx * across, lerp(a.y, b.y, along) + ny * across, rand(.12, .65 + f.low), 0, Math.PI * 2); ctx.fill()
     }
     for (let i = 0; i < e.bristles.length; i += 2) {
       const bristle = e.bristles[i]
@@ -543,6 +604,7 @@ function App() {
           <span className="button-dot" />{phase === 'finished' ? 'TERMINÉ' : 'COMMENCER'}
         </button>
         <div className="voice-orb" aria-hidden="true"><span style={{ transform: `scale(${0.42 + energy * 1.5})`, opacity: 0.38 + energy * 0.62 }} /></div>
+        <div className="spectral-signature" aria-hidden="true">{(engine.current.features?.bands || Array(SPECTRAL_BANDS).fill(0)).map((value, index) => <i key={index} style={{ transform: `scaleY(${.08 + value * .92})` }} />)}</div>
         <div className="session-info">
           <div><span>{status}</span><span className="timer">{phase === 'live' ? `${Math.max(0, Math.ceil(60 - progress * 60))}s` : phase === 'finished' ? '60s' : '—'}</span></div>
           <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>

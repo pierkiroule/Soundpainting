@@ -39,6 +39,8 @@ button { font: inherit; }
 .voice-orb { width: 37px; height: 37px; display: grid; place-items: center; }
 .voice-orb::before { content: ''; position: absolute; width: 32px; height: 32px; border: 1px solid rgba(20,20,18,.11); border-radius: 50%; }
 .voice-orb span { width: 13px; height: 13px; border-radius: 50%; background: #1b1b17; transition: transform 80ms linear; }
+.spectral-signature { width: 48px; height: 27px; display: flex; align-items: stretch; gap: 2px; padding: 2px 0; }
+.spectral-signature i { width: 2px; border-radius: 2px; background: linear-gradient(to top, #789c99, #d59698); transform-origin: bottom; transition: transform 70ms linear; }
 .session-info { width: 143px; padding: 0 9px 0 2px; font: 500 9px DM Mono, monospace; letter-spacing: .05em; }
 .session-info > div:first-child { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
 .timer { opacity: .45; }
