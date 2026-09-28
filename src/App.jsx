@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const SESSION_DURATION = 60
 const FFT_SIZE = 2048
-const BRISTLE_COUNT = 620
+const BRISTLE_COUNT = 260
+const TRAIL_LAYERS = 8
+const TRAIL_SLICE = 250
 const PAPER = '#f2eee5'
 const TOOLS = [
   { id: 'brush', label: 'Lavis', glyph: '◒' },
@@ -53,6 +55,7 @@ function App() {
     bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
     animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
     previewContext: null, gesture: null, recorder: null, recorderChunks: [], samples: [],
+    trailLayers: [], dpr: 1, composeAnimation: null,
   })
   const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
@@ -103,6 +106,7 @@ function App() {
     e.previewContext = previewRef.current.getContext('2d', { alpha: true, desynchronized: true })
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      e.dpr = dpr
       e.width = window.innerWidth
       e.height = window.innerHeight
       canvas.width = e.width * dpr
@@ -111,6 +115,13 @@ function App() {
       previewRef.current.height = e.height * dpr
       e.context.setTransform(dpr, 0, 0, dpr, 0, 0)
       e.previewContext.setTransform(dpr, 0, 0, dpr, 0, 0)
+      e.trailLayers = Array.from({ length: TRAIL_LAYERS }, () => {
+        const layer = document.createElement('canvas')
+        layer.width = e.width * dpr; layer.height = e.height * dpr
+        const context = layer.getContext('2d', { alpha: true })
+        context.setTransform(dpr, 0, 0, dpr, 0, 0)
+        return { canvas: layer, context, bucket: -1 }
+      })
       makePaper()
     }
     resize()
@@ -119,6 +130,7 @@ function App() {
       window.removeEventListener('resize', resize)
       cancelAnimationFrame(e.animation)
       cancelAnimationFrame(e.dryingAnimation)
+      cancelAnimationFrame(e.composeAnimation)
       e.stream?.getTracks().forEach((track) => track.stop())
       e.audioContext?.close()
     }
@@ -345,12 +357,34 @@ function App() {
     }
   }
 
-  const renderGesture = (gesture) => {
+  const paintLiveSegment = (a, b, gesture) => {
+    const e = engine.current
+    const bucket = Math.floor(b.time / TRAIL_SLICE)
+    const layer = e.trailLayers[bucket % TRAIL_LAYERS]
+    if (layer.bucket !== bucket) {
+      layer.context.clearRect(0, 0, e.width, e.height)
+      layer.bucket = bucket
+    }
+    paint(a, b, layer.context, gesture.style, b.features)
+  }
+
+  const composeLiveTrail = () => {
     const e = engine.current
     e.previewContext.clearRect(0, 0, e.width, e.height)
-    for (let index = 1; index < gesture.points.length; index += 1) {
-      paint(gesture.points[index - 1], gesture.points[index], e.previewContext, gesture.style, gesture.points[index].features)
+    const oldestBucket = Math.floor((performance.now() - 2000) / TRAIL_SLICE)
+    const layers = e.trailLayers.filter((layer) => layer.bucket >= oldestBucket).sort((a, b) => a.bucket - b.bucket)
+    for (const layer of layers) {
+      e.previewContext.drawImage(layer.canvas, 0, 0, layer.canvas.width, layer.canvas.height, 0, 0, e.width, e.height)
     }
+  }
+
+  const scheduleLiveComposition = () => {
+    const e = engine.current
+    if (e.composeAnimation) return
+    e.composeAnimation = requestAnimationFrame(() => {
+      e.composeAnimation = null
+      composeLiveTrail()
+    })
   }
 
   const pointerDown = (event) => {
@@ -365,6 +399,8 @@ function App() {
     const firstPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
     e.lastPoint = firstPoint
     e.gesture = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, points: [firstPoint], style: { tool, ink, brushSize } }
+    for (const layer of e.trailLayers) { layer.context.clearRect(0, 0, e.width, e.height); layer.bucket = -1 }
+    e.previewContext.clearRect(0, 0, e.width, e.height)
     e.recorderChunks = []
     if (typeof MediaRecorder !== 'undefined' && e.stream) {
       try {
@@ -381,16 +417,19 @@ function App() {
     const point = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
     const distance = Math.hypot(point.x - e.lastPoint.x, point.y - e.lastPoint.y)
     if (distance < 0.5) return
-    const steps = Math.min(8, Math.max(1, Math.ceil(distance / 5)))
+    const steps = Math.min(4, Math.max(1, Math.ceil(distance / 8)))
+    let previous = e.lastPoint
     for (let i = 1; i <= steps; i += 1) {
       const t = i / steps
       const next = { x: lerp(e.lastPoint.x, point.x, t), y: lerp(e.lastPoint.y, point.y, t), time: lerp(e.lastPoint.time, point.time, t), pressure: lerp(e.lastPoint.pressure, point.pressure, t), features: point.features }
       e.gesture.points.push(next)
+      paintLiveSegment(previous, next, e.gesture)
+      previous = next
     }
     const cutoff = point.time - 2000
     const firstVisible = Math.max(0, e.gesture.points.findIndex((item) => item.time >= cutoff) - 1)
     if (firstVisible > 0) e.gesture.points.splice(0, firstVisible)
-    renderGesture(e.gesture)
+    scheduleLiveComposition()
     e.lastPoint = point
   }
   const lift = () => {
@@ -402,6 +441,8 @@ function App() {
       if (e.recorder?.state === 'recording') e.recorder.stop()
       e.gesture = null; e.recorder = null; return
     }
+    if (e.composeAnimation) { cancelAnimationFrame(e.composeAnimation); e.composeAnimation = null }
+    composeLiveTrail()
     gesture.duration = Math.max(120, gesture.points.at(-1).time - gesture.points[0].time)
     e.context.drawImage(previewRef.current, 0, 0, previewRef.current.width, previewRef.current.height, 0, 0, e.width, e.height)
     e.previewContext.clearRect(0, 0, e.width, e.height)
@@ -443,13 +484,16 @@ function App() {
     link.click()
   }
 
-  const replay = async () => {
+  const replay = async (selection) => {
     const e = engine.current
     if (!e.samples.length || isPlaying) return
+    const isolated = Array.isArray(selection)
+    const sequence = isolated ? selection : e.samples
     setIsPlaying(true); setStatus('Relecture des gestes')
     await e.audioContext?.resume()
-    makePaper(); e.history = []
-    for (const sample of e.samples) {
+    if (isolated) e.previewContext.clearRect(0, 0, e.width, e.height)
+    else { makePaper(); e.history = [] }
+    for (const sample of sequence) {
       if (sample.audio && e.audioContext) {
         const source = e.audioContext.createBufferSource()
         source.buffer = sample.audio; source.connect(e.audioContext.destination); source.start()
@@ -460,7 +504,7 @@ function App() {
         const frame = (now) => {
           const elapsed = now - started
           while (rendered < sample.points.length && sample.points[rendered].time - sample.points[0].time <= elapsed) {
-            paint(sample.points[rendered - 1], sample.points[rendered], e.context, sample.style, sample.points[rendered].features)
+            paint(sample.points[rendered - 1], sample.points[rendered], isolated ? e.previewContext : e.context, sample.style, sample.points[rendered].features)
             rendered += 1
           }
           if (elapsed < sample.duration) requestAnimationFrame(frame)
@@ -469,6 +513,7 @@ function App() {
         requestAnimationFrame(frame)
       })
     }
+    if (isolated) e.previewContext.clearRect(0, 0, e.width, e.height)
     setHasMarks(true); setIsPlaying(false); setStatus(e.state === 'LIVE' ? 'Touchez · jouez · fixez' : 'Séquence terminée')
   }
 
@@ -503,8 +548,12 @@ function App() {
           <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>
         </div>
       </section>
+      {sampleCount > 0 && <div className="sample-strip" aria-label={`${sampleCount} samples enregistrés`}>
+        <span>SÉQUENCE</span>
+        {engine.current.samples.map((sample, index) => <button key={sample.id} style={{ '--sample': sample.style.ink.hex }} onClick={() => replay([sample])} disabled={isPlaying} aria-label={`Rejouer le sample ${index + 1}`}><i />{String(index + 1).padStart(2, '0')}</button>)}
+      </div>}
       <nav className="canvas-actions" aria-label="Actions de la toile">
-        <button className="replay-button" onClick={replay} disabled={!sampleCount || isPlaying} title="Rejouer les gestes"><span>▶</span> REJOUER <b>{sampleCount}</b></button>
+        <button className="replay-button" onClick={() => replay()} disabled={!sampleCount || isPlaying} title="Rejouer les gestes"><span>▶</span> REJOUER <b>{sampleCount}</b></button>
         <button onClick={undo} disabled={!hasMarks} title="Annuler"><span>↶</span> ANNULER</button>
         <button onClick={clearPaper} disabled={!hasMarks} title="Effacer la toile"><span>×</span> EFFACER</button>
         <button onClick={download} title="Exporter l’œuvre"><span>↓</span> EXPORTER</button>

@@ -53,6 +53,11 @@ button { font: inherit; }
 .canvas-actions .replay-button { color: #fffaf4; background: #7d9291; }
 .canvas-actions .replay-button:hover:not(:disabled) { background: #6d8281; }
 .canvas-actions .replay-button b { display: inline-grid; width: 16px; height: 16px; margin-left: 6px; place-items: center; border-radius: 50%; color: #687b7a; background: #f6f0e7; font-size: 7px; }
+.sample-strip { position: fixed; z-index: 5; right: 31px; bottom: 78px; display: flex; align-items: center; gap: 5px; padding: 6px 8px 6px 12px; border: 1px solid rgba(105,91,79,.1); border-radius: 16px; background: rgba(249,246,239,.65); backdrop-filter: blur(12px); }
+.sample-strip > span { margin-right: 4px; color: rgba(55,51,48,.45); font: 500 6px DM Mono, monospace; letter-spacing: .14em; }
+.sample-strip button { display: grid; grid-template-columns: 6px auto; align-items: center; gap: 4px; min-width: 28px; height: 23px; padding: 0 5px; border: 0; border-radius: 9px; color: rgba(55,51,48,.62); background: rgba(255,255,255,.3); font: 500 6px DM Mono, monospace; cursor: pointer; }
+.sample-strip button:hover:not(:disabled) { background: rgba(255,255,255,.8); }
+.sample-strip button i { width: 6px; height: 6px; border-radius: 50%; background: var(--sample); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sample), transparent 72%); }
 .sound-legend { position: fixed; z-index: 3; top: 50%; right: 32px; display: flex; flex-direction: column; align-items: center; gap: 7px; transform: translateY(-50%); color: rgba(28,27,23,.35); font: 500 6px DM Mono, monospace; letter-spacing: .13em; writing-mode: vertical-rl; pointer-events: none; }
 .sound-legend i { width: 1px; height: 18px; background: rgba(28,27,23,.15); }
 .sound-legend i:nth-of-type(2) { height: 28px; }.sound-legend i:nth-of-type(3) { height: 38px; }.sound-legend i:nth-of-type(4) { height: 52px; transform-origin: top; background: #d18e91; transition: transform 80ms linear; }
@@ -93,6 +98,7 @@ button { font: inherit; }
   .ink-control > div { display: flex; gap: 4px; margin: 0; }
   .ink-control button { width: 13px; height: 13px; border-width: 2px; }
   .canvas-actions { right: 13px; bottom: 13px; }
+  .sample-strip { right: 13px; bottom: 58px; max-width: calc(100% - 26px); overflow-x: auto; }
   .canvas-actions button { padding: 0 9px; font-size: 0; }
   .canvas-actions button span { margin: 0; font-size: 15px; }
   .sound-legend { display: none; }
