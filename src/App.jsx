@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const SESSION_DURATION = 60
 const FFT_SIZE = 2048
 const BRISTLE_COUNT = 180
 const SPECTRAL_BANDS = 12
 const TRAIL_LAYERS = 8
 const TRAIL_SLICE = 250
 const PAPER = '#f2eee5'
-const TOOLS = [
-  { id: 'brush', label: 'Lavis', glyph: '◒' },
-  { id: 'ribbon', label: 'Nappe', glyph: '≈' },
-  { id: 'spray', label: 'Brume', glyph: '⁙' },
-  { id: 'pulse', label: 'Éclosion', glyph: '◌' },
-  { id: 'eraser', label: 'Gomme', glyph: '◇' },
-]
 const INKS = [
   { id: 'sakura', label: 'Pétale', rgb: '212,139,143', hex: '#d48b8f' },
   { id: 'wisteria', label: 'Glycine', rgb: '132,132,169', hex: '#8484a9' },
@@ -57,15 +49,13 @@ function App() {
     animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
     previewContext: null, gesture: null, recorder: null, recorderChunks: [], samples: [],
     trailLayers: [], dpr: 1, composeAnimation: null, importedBuffer: null,
-    importedStartedAt: 0, playbackSource: null, sessionDuration: SESSION_DURATION,
+    importedStartedAt: 0, playbackSource: null, sessionDuration: 0,
   })
   const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
   const [progress, setProgress] = useState(0)
   const [energy, setEnergy] = useState(0)
-  const [endOpen, setEndOpen] = useState(false)
   const [error, setError] = useState('')
-  const [tool, setTool] = useState('brush')
   const [ink, setInk] = useState(INKS[0])
   const [brushSize, setBrushSize] = useState(1)
   const [hasMarks, setHasMarks] = useState(false)
@@ -74,6 +64,7 @@ function App() {
   const previewRef = useRef(null)
   const fileInputRef = useRef(null)
   const [sourceName, setSourceName] = useState('MICROPHONE')
+  const [elapsed, setElapsed] = useState(0)
 
   const makePaper = useCallback(() => {
     const e = engine.current
@@ -213,7 +204,6 @@ function App() {
         e.state = 'FINISHED'
         setPhase('finished')
         setStatus('Empreinte terminée')
-        setEndOpen(true)
       }
     }
     e.dryingAnimation = requestAnimationFrame(dry)
@@ -224,9 +214,10 @@ function App() {
     if (e.state !== 'LIVE') return
     const currentEnergy = analyse()
     const elapsed = (now - e.startedAt) / 1000
-    setProgress(clamp(elapsed / e.sessionDuration))
+    setElapsed(elapsed)
+    setProgress(e.sessionDuration ? clamp(elapsed / e.sessionDuration) : 0)
     setEnergy(currentEnergy)
-    if (elapsed >= e.sessionDuration && !e.pointerDown) finishSession()
+    if (e.sessionDuration && elapsed >= e.sessionDuration && !e.pointerDown) finishSession()
     else e.animation = requestAnimationFrame(runLoop)
   }, [analyse, finishSession])
 
@@ -244,7 +235,7 @@ function App() {
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       })
       const source = e.audioContext.createMediaStreamSource(e.stream)
-      e.importedBuffer = null; e.sessionDuration = SESSION_DURATION; setSourceName('MICROPHONE')
+      e.importedBuffer = null; e.sessionDuration = 0; setSourceName('MICROPHONE')
       e.analyser = e.audioContext.createAnalyser()
       e.analyser.fftSize = FFT_SIZE
       e.analyser.smoothingTimeConstant = 0.1
@@ -256,9 +247,9 @@ function App() {
       e.bristles = createBristles(e.analyser.frequencyBinCount)
       e.state = 'LIVE'
       e.startedAt = performance.now()
+      setElapsed(0)
       setPhase('live')
-      setStatus('Touchez · jouez · fixez')
-      setEndOpen(false)
+      setStatus('Maintenez pour peindre')
       runLoop()
     } catch (err) {
       console.error(err)
@@ -289,11 +280,11 @@ function App() {
       e.spectrum = new Float32Array(analyser.frequencyBinCount)
       e.lastSpectrum = new Float32Array(analyser.frequencyBinCount)
       e.bristles = createBristles(analyser.frequencyBinCount)
-      e.sessionDuration = Math.min(SESSION_DURATION, buffer.duration)
+      e.sessionDuration = buffer.duration
       e.startedAt = performance.now(); e.importedStartedAt = e.audioContext.currentTime
-      e.state = 'LIVE'; setPhase('live'); setProgress(0); setEndOpen(false)
+      e.state = 'LIVE'; setPhase('live'); setProgress(0); setElapsed(0)
       setSourceName(file.name.replace(/\.(mp3|wav)$/i, '').slice(0, 18).toUpperCase())
-      setStatus('Fichier · touchez · tracez')
+      setStatus('Maintenez pour peindre')
       source.start(); source.onended = () => { if (e.state === 'LIVE' && !e.pointerDown) finishSession() }
       runLoop()
     } catch (importError) {
@@ -308,7 +299,6 @@ function App() {
     const f = recordedFeatures || e.features
     if (!f) return
     const ctx = target || e.context
-    const activeTool = recordedStyle?.tool || tool
     const activeInk = recordedStyle?.ink || ink
     const activeSize = recordedStyle?.brushSize || brushSize
     const dx = b.x - a.x, dy = b.y - a.y
@@ -320,46 +310,6 @@ function App() {
     const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7) * activeSize
     const dryness = clamp(0.25 + velocity * 0.28 + f.noise * 0.16 + (1 - f.energy) * 0.28 - f.low * 0.12)
     ctx.lineCap = 'round'
-    if (activeTool === 'eraser') {
-      ctx.save(); ctx.strokeStyle = PAPER; ctx.lineWidth = Math.max(18, width * 1.25); ctx.globalAlpha = 0.92
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore(); return
-    }
-    if (activeTool === 'spray') {
-      const particles = Math.floor(8 + voice * 65 + f.high * 22)
-      for (let i = 0; i < particles; i += 1) {
-        const along = Math.random(), radius = Math.abs(gaussian()) * width * (0.35 + f.noise)
-        const angle = Math.random() * Math.PI * 2
-        ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.018, 0.1) * (0.4 + voice)})`; ctx.beginPath()
-        ctx.arc(lerp(a.x, b.x, along) + Math.cos(angle) * radius, lerp(a.y, b.y, along) + Math.sin(angle) * radius, rand(.25, 1.5 + f.high * 2), 0, Math.PI * 2); ctx.fill()
-      }
-      return
-    }
-    if (activeTool === 'pulse') {
-      if (Math.random() < .18 + f.flux * .5) {
-        const bloom = 5 + width * (.3 + f.low)
-        for (let ring = 0; ring < 4; ring += 1) {
-          ctx.save(); ctx.strokeStyle = `rgba(${activeInk.rgb},${(.07 + voice * .18) / (ring + 1)})`; ctx.lineWidth = 1.4 + ring * 2.2
-          ctx.beginPath(); ctx.arc(b.x + gaussian() * ring, b.y + gaussian() * ring, bloom + ring * 2.5, 0, Math.PI * 2); ctx.stroke(); ctx.restore()
-        }
-      }
-      return
-    }
-    if (activeTool === 'ribbon') {
-      for (let layer = 0; layer < 4; layer += 1) {
-        ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${activeInk.rgb},${(.025 + voice * .11) / (1 + layer * .32)})`
-        ctx.lineWidth = Math.max(3, width * (.5 + layer * .08)); ctx.beginPath(); ctx.moveTo(a.x + nx * width * .22, a.y + ny * width * .22)
-        ctx.bezierCurveTo(a.x - nx * width * f.mid, a.y - ny * width * f.mid, b.x + nx * width * f.high, b.y + ny * width * f.high, b.x - nx * width * .22, b.y - ny * width * .22); ctx.stroke(); ctx.restore()
-      }
-      const ribbonBands = f.bands || []
-      ribbonBands.forEach((level, band) => {
-        if (level < .035) return
-        const offset = (band / Math.max(1, ribbonBands.length - 1) - .5) * width * .62
-        ctx.strokeStyle = `rgba(${activeInk.rgb},${.018 + level * .14})`; ctx.lineWidth = .2 + level
-        ctx.beginPath(); ctx.moveTo(a.x + nx * offset, a.y + ny * offset)
-        ctx.quadraticCurveTo((a.x + b.x) / 2 - nx * offset * f.mid, (a.y + b.y) / 2 - ny * offset * f.mid, b.x + nx * offset, b.y + ny * offset); ctx.stroke()
-      })
-      return
-    }
     const pigment = .035 + voice * .12
     for (let layer = 0; layer < 5; layer += 1) {
       const drift = gaussian() * width * .045
@@ -517,7 +467,7 @@ function App() {
     setHasMarks(true)
     const firstPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
     e.lastPoint = firstPoint
-    e.gesture = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, points: [firstPoint], style: { tool, ink, brushSize } }
+    e.gesture = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, points: [firstPoint], style: { ink, brushSize } }
     for (const layer of e.trailLayers) { layer.context.clearRect(0, 0, e.width, e.height); layer.bucket = -1 }
     e.previewContext.clearRect(0, 0, e.width, e.height)
     e.recorderChunks = []
@@ -577,11 +527,11 @@ function App() {
   }
   const reset = () => {
     const e = engine.current
-    setEndOpen(false); makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
+    makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
     try { e.playbackSource?.stop() } catch { /* aucune lecture active */ }
     e.playbackSource = null; e.importedBuffer = null; setSourceName('MICROPHONE')
     e.history = []; e.samples = []; setHasMarks(false); setSampleCount(0)
-    setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setEnergy(0); setError('')
+    setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setElapsed(0); setEnergy(0); setError('')
   }
 
   const undo = () => {
@@ -636,10 +586,10 @@ function App() {
       })
     }
     if (isolated) e.previewContext.clearRect(0, 0, e.width, e.height)
-    setHasMarks(true); setIsPlaying(false); setStatus(e.state === 'LIVE' ? 'Touchez · jouez · fixez' : 'Séquence terminée')
+    setHasMarks(true); setIsPlaying(false); setStatus(e.state === 'LIVE' ? 'Maintenez pour peindre' : 'Séquence terminée')
   }
 
-  const hint = isPlaying ? 'VOS GESTES REPRENNENT VIE' : phase === 'live' ? 'MAINTENEZ · JOUEZ 2 SECONDES · RELÂCHEZ POUR FIXER' : phase === 'drying' ? 'NE TOUCHEZ PLUS' : phase === 'finished' ? 'UNE MINUTE DE VOIX · UNE EMPREINTE' : 'VOIX = MATIÈRE · GESTE = FORME'
+  const hint = isPlaying ? 'VOS GESTES REPRENNENT VIE' : phase === 'live' ? 'MAINTENEZ POUR PEINDRE · RELÂCHEZ POUR FIXER' : phase === 'drying' ? 'L’AQUARELLE SE FIXE' : phase === 'finished' ? 'REJOUEZ · EXPORTEZ · RECOMMENCEZ' : 'CHOISISSEZ UNE SOURCE SONORE'
 
   return (
     <main className={`app phase-${phase}`}>
@@ -649,31 +599,31 @@ function App() {
         <span className="brand-mark" aria-hidden="true">声</span>
         <span><strong>Koe no Fude</strong><small>声の筆 · LE PINCEAU DE LA VOIX</small></span>
       </header>
-      <aside className="studio-tools" aria-label="Atelier de peinture">
-        <div className="tool-heading"><span>OUTILS</span><small>05</small></div>
-        <div className="tool-list">
-          {TOOLS.map((item, index) => <button key={item.id} className={tool === item.id ? 'active' : ''} onClick={() => setTool(item.id)} title={item.label} aria-label={item.label} aria-pressed={tool === item.id}><span>{item.glyph}</span><em>0{index + 1}</em></button>)}
-        </div>
+      {phase !== 'idle' && <aside className="studio-tools simple-tools" aria-label="Matière du pinceau">
+        <div className="tool-heading"><span>MATIÈRE</span></div>
         <div className="size-control">
           <label htmlFor="brush-size"><span>ÉPAISSEUR</span><b>{Math.round(brushSize * 100)}</b></label>
           <input id="brush-size" type="range" min="0.45" max="1.8" step="0.05" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
         </div>
         <div className="ink-control"><span>PIGMENTS</span><div>{INKS.map((color) => <button key={color.id} className={ink.id === color.id ? 'active' : ''} style={{ '--ink': color.hex }} onClick={() => setInk(color)} aria-label={color.label} title={color.label} />)}</div></div>
-      </aside>
-      <section className="controls" aria-live="polite">
-        <button className="start-button" onClick={startSession} disabled={phase === 'live' || phase === 'drying'}>
-          <span className="button-dot" />{phase === 'finished' ? 'TERMINÉ' : 'COMMENCER'}
-        </button>
-        <button className="audio-import" onClick={() => fileInputRef.current?.click()} disabled={phase === 'live' || phase === 'drying'} title="Importer un fichier MP3 ou WAV"><span>＋</span> AUDIO</button>
-        <input ref={fileInputRef} className="audio-file-input" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" onChange={importAudio} />
+      </aside>}
+      {phase === 'idle' && <section className="source-panel" aria-labelledby="source-title">
+        <p>01 · SOURCE SONORE</p>
+        <h1 id="source-title">Que voulez-vous<br />faire entendre ?</h1>
+        <div><button onClick={startSession}><span>●</span><b>VOIX EN DIRECT</b><small>Peindre avec le microphone</small></button><button onClick={() => fileInputRef.current?.click()}><span>＋</span><b>FICHIER AUDIO</b><small>Importer un MP3 ou un WAV</small></button></div>
+        <em>Maintenez le doigt pour créer un fragment de 2 secondes.<br />Relâchez pour le déposer sur le papier.</em>
+      </section>}
+      <input ref={fileInputRef} className="audio-file-input" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" onChange={importAudio} />
+      {phase !== 'idle' && <section className="controls" aria-live="polite">
+        {phase === 'live' && <button className="finish-button" onClick={finishSession}>TERMINER</button>}
         <div className="voice-orb" aria-hidden="true"><span style={{ transform: `scale(${0.42 + energy * 1.5})`, opacity: 0.38 + energy * 0.62 }} /></div>
         <div className="spectral-signature" aria-hidden="true">{(engine.current.features?.bands || Array(SPECTRAL_BANDS).fill(0)).map((value, index) => <i key={index} style={{ transform: `scaleY(${.08 + value * .92})` }} />)}</div>
         <div className="session-info">
-          <div><span>{status}</span><span className="timer">{phase === 'live' ? `${Math.max(0, Math.ceil(engine.current.sessionDuration * (1 - progress)))}s` : phase === 'finished' ? `${Math.ceil(engine.current.sessionDuration)}s` : '—'}</span></div>
+          <div><span>{status}</span><span className="timer">{phase === 'live' ? engine.current.sessionDuration ? `${Math.max(0, Math.ceil(engine.current.sessionDuration * (1 - progress)))}s` : `${Math.floor(elapsed)}s` : '—'}</span></div>
           <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>
         </div>
         <span className="source-chip" title={sourceName}>{sourceName}</span>
-      </section>
+      </section>}
       {sampleCount > 0 && <div className="sample-strip" aria-label={`${sampleCount} samples enregistrés`}>
         <span>SÉQUENCE</span>
         {engine.current.samples.map((sample, index) => <button key={sample.id} style={{ '--sample': sample.style.ink.hex }} onClick={() => replay([sample])} disabled={isPlaying} aria-label={`Rejouer le sample ${index + 1}`}><i />{String(index + 1).padStart(2, '0')}</button>)}
@@ -683,20 +633,12 @@ function App() {
         <button onClick={undo} disabled={!hasMarks} title="Annuler"><span>↶</span> ANNULER</button>
         <button onClick={clearPaper} disabled={!hasMarks} title="Effacer la toile"><span>×</span> EFFACER</button>
         <button onClick={download} title="Exporter l’œuvre"><span>↓</span> EXPORTER</button>
+        {phase === 'finished' && <button onClick={reset} title="Nouvelle œuvre"><span>＋</span> NOUVELLE</button>}
       </nav>
       <div className="sound-legend" aria-hidden="true"><span>GRAVE</span><i /><i /><i /><i className="lit" style={{ transform: `scaleY(${.25 + energy * .75})` }} /><span>AIGU</span></div>
       {error && <p className="error-message">{error}</p>}
       <div className="edition"><span>EXPÉRIENCE SONORE</span><i /><span>ÉDITION 01</span></div>
       <p className="hint">{hint}</p>
-      <div className={`end-overlay ${endOpen ? 'is-open' : ''}`} aria-hidden={!endOpen}>
-        <section className="end-card" role="dialog" aria-modal="true" aria-labelledby="end-title">
-          <span className="end-stamp">声</span>
-          <p className="eyebrow">VOTRE EMPREINTE</p>
-          <h2 id="end-title">Une voix.<br />Une trace.</h2>
-          <p className="end-copy">Votre minute de voix et de geste s’est déposée sur le papier.</p>
-          <div className="end-actions"><button onClick={reset}>NOUVELLE</button><button className="secondary" onClick={() => setEndOpen(false)}>CONTEMPLER</button></div>
-        </section>
-      </div>
     </main>
   )
 }
