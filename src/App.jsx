@@ -1,644 +1,203 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const FFT_SIZE = 2048
-const BRISTLE_COUNT = 180
-const SPECTRAL_BANDS = 12
-const TRAIL_LAYERS = 8
-const TRAIL_SLICE = 250
-const PAPER = '#f2eee5'
-const INKS = [
-  { id: 'sakura', label: 'Pétale', rgb: '212,139,143', hex: '#d48b8f' },
-  { id: 'wisteria', label: 'Glycine', rgb: '132,132,169', hex: '#8484a9' },
-  { id: 'mist', label: 'Brume', rgb: '116,158,161', hex: '#749ea1' },
-  { id: 'moss', label: 'Mousse', rgb: '128,145,111', hex: '#80916f' },
-  { id: 'ochre', label: 'Pollen', rgb: '202,164,102', hex: '#caa466' },
-  { id: 'sumi', label: 'Sumi doux', rgb: '74,72,75', hex: '#4a484b' },
+const PAPER = '#f4f0e8'
+const BRUSHES = [
+  { id: 'silk', name: 'Fil de lune', detail: 'filaments', color: '#8c9fc8', rgb: '140,159,200' },
+  { id: 'bloom', name: 'Pétale', detail: 'auréoles', color: '#d99aa4', rgb: '217,154,164' },
+  { id: 'mist', name: 'Pollen', detail: 'poussière', color: '#d8b66f', rgb: '216,182,111' },
 ]
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value))
-const lerp = (a, b, t) => a + (b - a) * t
-const rand = (a, b) => a + Math.random() * (b - a)
-const gaussian = () => {
-  let u = 0
-  let v = 0
-  while (!u) u = Math.random()
-  while (!v) v = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
-}
+const lerp = (a, b, amount) => a + (b - a) * amount
+const random = (min, max) => min + Math.random() * (max - min)
 
-function createBristles(binCount) {
-  return Array.from({ length: BRISTLE_COUNT }, (_, index) => {
-    const q = index / (BRISTLE_COUNT - 1)
-    const u = Math.sign(q - 0.5) * Math.pow(Math.abs(q - 0.5) * 2, 0.68)
-    return {
-      u,
-      bin: Math.floor(Math.pow(Math.abs(u), 1.55) * (binCount - 1)),
-      phase: Math.random() * Math.PI * 2,
-      width: rand(0.12, 1.1),
-      bend: gaussian(),
-    }
-  })
+function makeTunnel(count = 90) {
+  return Array.from({ length: count }, () => ({
+    angle: Math.random() * Math.PI * 2,
+    radius: random(.35, 1.2),
+    depth: Math.random(),
+    length: random(.04, .18),
+  }))
 }
 
 function App() {
   const canvasRef = useRef(null)
   const engine = useRef({
-    state: 'IDLE', context: null, audioContext: null, stream: null, analyser: null,
-    frequency: null, waveform: null, spectrum: null, lastSpectrum: null, features: null,
-    bristles: createBristles(FFT_SIZE / 2), pointerDown: false, lastPoint: null,
-    animation: null, dryingAnimation: null, startedAt: 0, width: 0, height: 0, history: [],
-    previewContext: null, gesture: null, recorder: null, recorderChunks: [], samples: [],
-    trailLayers: [], dpr: 1, composeAnimation: null, importedBuffer: null,
-    importedStartedAt: 0, playbackSource: null, sessionDuration: 0,
+    ctx: null, width: 0, height: 0, dpr: 1, frame: null, lastTime: 0,
+    audioContext: null, stream: null, analyser: null, frequency: null, waveform: null,
+    live: false, spraying: false, brush: BRUSHES[0], particles: [], tunnel: makeTunnel(),
+    point: { x: 0, y: 0, vx: 0, vy: 0, phase: 0 }, camera: { x: 0, y: 0, zoom: 1, roll: 0 },
+    features: { energy: 0, bass: 0, mid: 0, high: 0, flux: 0 }, previousEnergy: 0,
   })
-  const [status, setStatus] = useState('Prêt à créer')
   const [phase, setPhase] = useState('idle')
-  const [progress, setProgress] = useState(0)
+  const [brush, setBrush] = useState(BRUSHES[0])
   const [energy, setEnergy] = useState(0)
   const [error, setError] = useState('')
-  const [ink, setInk] = useState(INKS[0])
-  const [brushSize, setBrushSize] = useState(1)
-  const [hasMarks, setHasMarks] = useState(false)
-  const [sampleCount, setSampleCount] = useState(0)
-  const [isPlaying, setIsPlaying] = useState(false)
-  const previewRef = useRef(null)
-  const fileInputRef = useRef(null)
-  const [sourceName, setSourceName] = useState('MICROPHONE')
-  const [elapsed, setElapsed] = useState(0)
 
-  const makePaper = useCallback(() => {
+  const paintPaper = useCallback(() => {
     const e = engine.current
-    const ctx = e.context
-    if (!ctx) return
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.fillStyle = PAPER
-    ctx.fillRect(0, 0, e.width, e.height)
-    const wash = ctx.createRadialGradient(e.width * .52, e.height * .42, 0, e.width * .52, e.height * .42, Math.max(e.width, e.height) * .72)
-    wash.addColorStop(0, 'rgba(255,253,247,.34)')
-    wash.addColorStop(1, 'rgba(214,202,183,.12)')
-    ctx.fillStyle = wash
-    ctx.fillRect(0, 0, e.width, e.height)
-    for (let i = 0; i < (e.width * e.height) / 145; i += 1) {
-      const x = Math.random() * e.width
-      const y = Math.random() * e.height
-      const angle = Math.random() * Math.PI
-      const length = rand(3, 28)
-      ctx.strokeStyle = Math.random() > 0.5
-        ? `rgba(92,76,59,${rand(0.008, 0.026)})`
-        : `rgba(255,255,250,${rand(0.03, 0.09)})`
-      ctx.lineWidth = rand(0.12, 0.55)
-      ctx.beginPath()
-      ctx.moveTo(x, y)
-      ctx.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length)
-      ctx.stroke()
+    if (!e.ctx) return
+    e.ctx.setTransform(e.dpr, 0, 0, e.dpr, 0, 0)
+    e.ctx.fillStyle = PAPER
+    e.ctx.fillRect(0, 0, e.width, e.height)
+    for (let index = 0; index < e.width * e.height / 900; index += 1) {
+      e.ctx.fillStyle = `rgba(85,72,58,${random(.008, .025)})`
+      e.ctx.fillRect(Math.random() * e.width, Math.random() * e.height, random(.2, .7), random(.2, .7))
     }
+  }, [])
+
+  const readSound = () => {
+    const e = engine.current
+    if (!e.analyser) return e.features
+    e.analyser.getByteFrequencyData(e.frequency)
+    e.analyser.getByteTimeDomainData(e.waveform)
+    let rms = 0, bass = 0, mid = 0, high = 0
+    for (const value of e.waveform) rms += ((value - 128) / 128) ** 2
+    for (let index = 0; index < e.frequency.length; index += 1) {
+      const value = e.frequency[index] / 255
+      const ratio = index / e.frequency.length
+      if (ratio < .08) bass += value / (e.frequency.length * .08)
+      else if (ratio < .34) mid += value / (e.frequency.length * .26)
+      else high += value / (e.frequency.length * .66)
+    }
+    const measured = clamp(Math.sqrt(rms / e.waveform.length) * 4.5)
+    e.features = { energy: measured, bass: clamp(bass * 1.6), mid: clamp(mid * 2), high: clamp(high * 2.8), flux: clamp(Math.abs(measured - e.previousEnergy) * 5) }
+    e.previousEnergy = measured
+    return e.features
+  }
+
+  const emit = (x, y, features) => {
+    const e = engine.current
+    const amount = Math.floor(2 + features.energy * 9 + features.high * 4)
+    for (let index = 0; index < amount; index += 1) {
+      const angle = Math.random() * Math.PI * 2
+      const speed = random(.15, 1.3) * (1 + features.high * 2)
+      e.particles.push({
+        x, y, px: x, py: y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+        life: 1, decay: random(.003, .009), size: random(.5, 2.2) * (1 + features.bass * 2),
+        wobble: random(0, Math.PI * 2), brush: e.brush,
+      })
+    }
+    if (e.particles.length > 1400) e.particles.splice(0, e.particles.length - 1400)
+  }
+
+  const drawParticle = (ctx, particle, features) => {
+    const alpha = particle.life * (.12 + features.energy * .25)
+    const { rgb, id } = particle.brush
+    if (id === 'silk') {
+      ctx.strokeStyle = `rgba(${rgb},${alpha})`; ctx.lineWidth = .35 + features.high * .8
+      ctx.beginPath(); ctx.moveTo(particle.px, particle.py); ctx.quadraticCurveTo(particle.x + Math.sin(particle.wobble) * 4, particle.y + Math.cos(particle.wobble) * 4, particle.x, particle.y); ctx.stroke()
+    } else if (id === 'bloom') {
+      ctx.strokeStyle = `rgba(${rgb},${alpha * .55})`; ctx.lineWidth = random(.4, 1.2)
+      ctx.beginPath(); ctx.arc(particle.x, particle.y, particle.size * (2.5 + (1 - particle.life) * 5), 0, Math.PI * 2); ctx.stroke()
+    } else {
+      ctx.fillStyle = `rgba(${rgb},${alpha * .8})`; ctx.beginPath(); ctx.arc(particle.x, particle.y, particle.size * random(.25, 1), 0, Math.PI * 2); ctx.fill()
+    }
+  }
+
+  const drawTunnel = (ctx, time, camera, features) => {
+    const e = engine.current
+    ctx.save(); ctx.translate(e.width / 2, e.height / 2); ctx.rotate(camera.roll)
+    for (const mote of e.tunnel) {
+      mote.depth -= (.0014 + features.energy * .003)
+      if (mote.depth <= 0) mote.depth = 1
+      const perspective = 1 / (.12 + mote.depth)
+      const radius = mote.radius * Math.min(e.width, e.height) * .52 * perspective
+      const x = Math.cos(mote.angle + time * .00003) * radius - camera.x * perspective * .12
+      const y = Math.sin(mote.angle + time * .00003) * radius - camera.y * perspective * .12
+      ctx.strokeStyle = `rgba(116,139,157,${(1 - mote.depth) * .09})`; ctx.lineWidth = .45
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x * (1 + mote.length), y * (1 + mote.length)); ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  const animate = useCallback((time) => {
+    const e = engine.current
+    if (!e.ctx) return
+    const dt = Math.min(32, time - (e.lastTime || time)); e.lastTime = time
+    const sound = readSound(); setEnergy(sound.energy)
+    const point = e.point
+    point.phase += .008 * dt * (1 + sound.mid * 2)
+    const targetVx = Math.cos(point.phase * .71) * (1.2 + sound.high * 5) + Math.sin(point.phase * 2.7) * sound.flux * 8
+    const targetVy = Math.sin(point.phase) * (1 + sound.mid * 4) + Math.cos(point.phase * 1.9) * sound.bass * 5
+    point.vx = lerp(point.vx, targetVx, .025 + sound.flux * .12)
+    point.vy = lerp(point.vy, targetVy, .025 + sound.flux * .12)
+    point.x += point.vx * dt * .055; point.y += point.vy * dt * .055
+    const limit = Math.min(e.width, e.height) * .26
+    if (Math.abs(point.x) > limit) point.vx -= Math.sign(point.x) * .8
+    if (Math.abs(point.y) > limit) point.vy -= Math.sign(point.y) * .8
+    e.camera.x = lerp(e.camera.x, point.x, .018 + sound.bass * .02)
+    e.camera.y = lerp(e.camera.y, point.y, .018 + sound.bass * .02)
+    e.camera.zoom = lerp(e.camera.zoom, .92 + sound.bass * .3 - sound.high * .08, .025)
+    e.camera.roll = lerp(e.camera.roll, Math.sin(point.phase * .22) * (.035 + sound.mid * .09), .018)
+
+    const ctx = e.ctx
+    ctx.setTransform(e.dpr, 0, 0, e.dpr, 0, 0)
+    ctx.fillStyle = 'rgba(244,240,232,.065)'; ctx.fillRect(0, 0, e.width, e.height)
+    drawTunnel(ctx, time, e.camera, sound)
+    ctx.save(); ctx.translate(e.width / 2, e.height / 2); ctx.rotate(-e.camera.roll); ctx.scale(e.camera.zoom, e.camera.zoom); ctx.translate(-e.camera.x, -e.camera.y)
+    if (e.spraying) emit(point.x, point.y, sound)
+    for (let index = e.particles.length - 1; index >= 0; index -= 1) {
+      const particle = e.particles[index]
+      particle.px = particle.x; particle.py = particle.y
+      particle.wobble += .04 + sound.high * .1
+      particle.vx += Math.sin(particle.wobble) * sound.mid * .025
+      particle.vy += Math.cos(particle.wobble * .8) * sound.high * .025
+      particle.x += particle.vx * dt * .045; particle.y += particle.vy * dt * .045
+      particle.life -= particle.decay * dt
+      if (particle.life <= 0) e.particles.splice(index, 1)
+      else drawParticle(ctx, particle, sound)
+    }
+    const glow = 7 + sound.energy * 22
+    ctx.fillStyle = `rgba(${e.brush.rgb},.12)`; ctx.beginPath(); ctx.arc(point.x, point.y, glow, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = e.brush.color; ctx.beginPath(); ctx.arc(point.x, point.y, 3 + sound.energy * 5, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+    e.frame = requestAnimationFrame(animate)
   }, [])
 
   useEffect(() => {
+    const e = engine.current
     const canvas = canvasRef.current
-    const e = engine.current
-    e.context = canvas.getContext('2d', { alpha: false, desynchronized: true })
-    e.previewContext = previewRef.current.getContext('2d', { alpha: true, desynchronized: true })
+    e.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      e.dpr = dpr
-      e.width = window.innerWidth
-      e.height = window.innerHeight
-      canvas.width = e.width * dpr
-      canvas.height = e.height * dpr
-      previewRef.current.width = e.width * dpr
-      previewRef.current.height = e.height * dpr
-      e.context.setTransform(dpr, 0, 0, dpr, 0, 0)
-      e.previewContext.setTransform(dpr, 0, 0, dpr, 0, 0)
-      e.trailLayers = Array.from({ length: TRAIL_LAYERS }, () => {
-        const layer = document.createElement('canvas')
-        layer.width = e.width * dpr; layer.height = e.height * dpr
-        const context = layer.getContext('2d', { alpha: true })
-        context.setTransform(dpr, 0, 0, dpr, 0, 0)
-        return { canvas: layer, context, bucket: -1 }
-      })
-      makePaper()
+      e.dpr = Math.min(devicePixelRatio || 1, 2); e.width = innerWidth; e.height = innerHeight
+      canvas.width = e.width * e.dpr; canvas.height = e.height * e.dpr
+      paintPaper()
     }
-    resize()
-    window.addEventListener('resize', resize)
-    return () => {
-      window.removeEventListener('resize', resize)
-      cancelAnimationFrame(e.animation)
-      cancelAnimationFrame(e.dryingAnimation)
-      cancelAnimationFrame(e.composeAnimation)
-      e.stream?.getTracks().forEach((track) => track.stop())
-      e.audioContext?.close()
-    }
-  }, [makePaper])
+    resize(); addEventListener('resize', resize); e.frame = requestAnimationFrame(animate)
+    return () => { removeEventListener('resize', resize); cancelAnimationFrame(e.frame); e.stream?.getTracks().forEach((track) => track.stop()); e.audioContext?.close() }
+  }, [animate, paintPaper])
 
-  const analyse = useCallback(() => {
+  const start = async () => {
     const e = engine.current
-    e.analyser.getByteFrequencyData(e.frequency)
-    e.analyser.getByteTimeDomainData(e.waveform)
-    let total = 0, weighted = 0, low = 0, mid = 0, high = 0, flux = 0
-    for (let i = 0; i < e.frequency.length; i += 1) {
-      const value = Math.pow(e.frequency[i] / 255, 0.68)
-      e.spectrum[i] = value
-      total += value
-      weighted += value * i
-      const f = i / e.frequency.length
-      if (f < 0.07) low += value
-      else if (f < 0.32) mid += value
-      else high += value
-      flux += Math.max(0, value - e.lastSpectrum[i])
-      e.lastSpectrum[i] = value
-    }
-    let rms = 0, zeroCross = 0
-    let previous = (e.waveform[0] - 128) / 128
-    for (const byte of e.waveform) {
-      const value = (byte - 128) / 128
-      rms += value * value
-      if ((value >= 0) !== (previous >= 0)) zeroCross += 1
-      previous = value
-    }
-    const measuredEnergy = clamp(Math.sqrt(rms / e.waveform.length) * 5)
-    const bands = Array.from({ length: SPECTRAL_BANDS }, (_, band) => {
-      const start = Math.floor(Math.pow(band / SPECTRAL_BANDS, 1.8) * e.spectrum.length)
-      const end = Math.max(start + 1, Math.floor(Math.pow((band + 1) / SPECTRAL_BANDS, 1.8) * e.spectrum.length))
-      let sum = 0
-      for (let index = start; index < end; index += 1) sum += e.spectrum[index]
-      return clamp(sum / (end - start))
-    })
-    const bandTotal = bands.reduce((sum, value) => sum + value, 0)
-    const entropy = bandTotal ? -bands.reduce((sum, value) => {
-      const probability = value / bandTotal
-      return probability ? sum + probability * Math.log(probability) : sum
-    }, 0) / Math.log(SPECTRAL_BANDS) : 0
-    e.features = {
-      energy: measuredEnergy, low: clamp(low / 45), mid: clamp(mid / 110), high: clamp(high / 180),
-      centroid: total ? weighted / total / e.frequency.length : 0,
-      flux: clamp(flux / 30), noise: clamp((zeroCross / e.waveform.length) * 15), bands, entropy,
-    }
-    return measuredEnergy
-  }, [])
-
-  const finishSession = useCallback(() => {
-    const e = engine.current
-    if (e.state !== 'LIVE') return
-    e.state = 'DRYING'
-    e.pointerDown = false
-    e.lastPoint = null
-    e.stream?.getTracks().forEach((track) => track.stop())
-    try { e.playbackSource?.stop() } catch { /* source déjà terminée */ }
-    setPhase('drying')
-    setStatus("L'encre se pose")
-    setProgress(1)
-    setEnergy(0)
-    const started = performance.now()
-    const dry = (now) => {
-      const amount = clamp((now - started) / 2800)
-      if (Math.random() < 0.35) {
-        const ctx = e.context
-        ctx.fillStyle = `rgba(30,27,22,${0.004 * (1 - amount)})`
-        ctx.beginPath()
-        ctx.arc(Math.random() * e.width, Math.random() * e.height, rand(0.2, 1), 0, Math.PI * 2)
-        ctx.fill()
-      }
-      if (amount < 1) e.dryingAnimation = requestAnimationFrame(dry)
-      else {
-        e.state = 'FINISHED'
-        setPhase('finished')
-        setStatus('Empreinte terminée')
-      }
-    }
-    e.dryingAnimation = requestAnimationFrame(dry)
-  }, [])
-
-  const runLoop = useCallback((now = performance.now()) => {
-    const e = engine.current
-    if (e.state !== 'LIVE') return
-    const currentEnergy = analyse()
-    const elapsed = (now - e.startedAt) / 1000
-    setElapsed(elapsed)
-    setProgress(e.sessionDuration ? clamp(elapsed / e.sessionDuration) : 0)
-    setEnergy(currentEnergy)
-    if (e.sessionDuration && elapsed >= e.sessionDuration && !e.pointerDown) finishSession()
-    else e.animation = requestAnimationFrame(runLoop)
-  }, [analyse, finishSession])
-
-  const startSession = async () => {
-    const e = engine.current
-    if (e.state === 'LIVE') return
     setError('')
     try {
-      try { e.playbackSource?.stop() } catch { /* aucune lecture active */ }
-      e.playbackSource = null
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone indisponible')
-      e.audioContext ||= new AudioContext()
-      await e.audioContext.resume()
-      e.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      })
+      e.audioContext ||= new AudioContext(); await e.audioContext.resume()
+      e.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } })
       const source = e.audioContext.createMediaStreamSource(e.stream)
-      e.importedBuffer = null; e.sessionDuration = 0; setSourceName('MICROPHONE')
-      e.analyser = e.audioContext.createAnalyser()
-      e.analyser.fftSize = FFT_SIZE
-      e.analyser.smoothingTimeConstant = 0.1
-      source.connect(e.analyser)
-      e.frequency = new Uint8Array(e.analyser.frequencyBinCount)
-      e.waveform = new Uint8Array(e.analyser.fftSize)
-      e.spectrum = new Float32Array(e.analyser.frequencyBinCount)
-      e.lastSpectrum = new Float32Array(e.analyser.frequencyBinCount)
-      e.bristles = createBristles(e.analyser.frequencyBinCount)
-      e.state = 'LIVE'
-      e.startedAt = performance.now()
-      setElapsed(0)
-      setPhase('live')
-      setStatus('Maintenez pour peindre')
-      runLoop()
-    } catch (err) {
-      console.error(err)
-      setStatus('Micro non disponible')
-      setError("Autorisez l'accès au microphone pour commencer.")
-    }
+      e.analyser = e.audioContext.createAnalyser(); e.analyser.fftSize = 1024; e.analyser.smoothingTimeConstant = .28
+      source.connect(e.analyser); e.frequency = new Uint8Array(e.analyser.frequencyBinCount); e.waveform = new Uint8Array(e.analyser.fftSize)
+      e.live = true; setPhase('live')
+    } catch (microphoneError) { console.error(microphoneError); setError('Autorisez le microphone pour entrer dans le flux.') }
   }
 
-  const importAudio = async (event) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    const e = engine.current
-    setError(''); setStatus('Préparation du fichier')
-    try {
-      e.stream?.getTracks().forEach((track) => track.stop()); e.stream = null
-      e.playbackSource?.stop()
-      e.audioContext ||= new AudioContext()
-      await e.audioContext.resume()
-      const buffer = await e.audioContext.decodeAudioData(await file.arrayBuffer())
-      const source = e.audioContext.createBufferSource()
-      const analyser = e.audioContext.createAnalyser()
-      analyser.fftSize = FFT_SIZE; analyser.smoothingTimeConstant = .1
-      source.buffer = buffer; source.connect(analyser); source.connect(e.audioContext.destination)
-      e.analyser = analyser; e.playbackSource = source; e.importedBuffer = buffer
-      e.frequency = new Uint8Array(analyser.frequencyBinCount)
-      e.waveform = new Uint8Array(analyser.fftSize)
-      e.spectrum = new Float32Array(analyser.frequencyBinCount)
-      e.lastSpectrum = new Float32Array(analyser.frequencyBinCount)
-      e.bristles = createBristles(analyser.frequencyBinCount)
-      e.sessionDuration = buffer.duration
-      e.startedAt = performance.now(); e.importedStartedAt = e.audioContext.currentTime
-      e.state = 'LIVE'; setPhase('live'); setProgress(0); setElapsed(0)
-      setSourceName(file.name.replace(/\.(mp3|wav)$/i, '').slice(0, 18).toUpperCase())
-      setStatus('Maintenez pour peindre')
-      source.start(); source.onended = () => { if (e.state === 'LIVE' && !e.pointerDown) finishSession() }
-      runLoop()
-    } catch (importError) {
-      console.error(importError)
-      setError('Ce fichier audio ne peut pas être lu. Choisissez un MP3 ou un WAV valide.')
-      setStatus('Import impossible')
-    }
-  }
-
-  const paint = (a, b, target, recordedStyle, recordedFeatures) => {
-    const e = engine.current
-    const f = recordedFeatures || e.features
-    if (!f) return
-    const ctx = target || e.context
-    const activeInk = recordedStyle?.ink || ink
-    const activeSize = recordedStyle?.brushSize || brushSize
-    const dx = b.x - a.x, dy = b.y - a.y
-    const length = Math.hypot(dx, dy)
-    if (!length) return
-    const tx = dx / length, ty = dy / length, nx = -ty, ny = tx
-    const velocity = length / Math.max(1, b.time - a.time)
-    const voice = clamp((f.energy - 0.012) * 1.4)
-    const width = (7 + f.low * 68 + f.energy * 28) * (0.65 + b.pressure * 0.7) * activeSize
-    const dryness = clamp(0.25 + velocity * 0.28 + f.noise * 0.16 + (1 - f.energy) * 0.28 - f.low * 0.12)
-    ctx.lineCap = 'round'
-    const pigment = .035 + voice * .12
-    for (let layer = 0; layer < 5; layer += 1) {
-      const drift = gaussian() * width * .045
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.strokeStyle = `rgba(${activeInk.rgb},${pigment / (1 + layer * .42)})`; ctx.lineWidth = width * (1.18 - layer * .12)
-      ctx.beginPath(); ctx.moveTo(a.x + nx * drift, a.y + ny * drift)
-      ctx.quadraticCurveTo((a.x + b.x) / 2 + nx * (drift + gaussian() * f.mid * 3), (a.y + b.y) / 2 + ny * (drift + gaussian() * f.mid * 3), b.x + nx * drift, b.y + ny * drift); ctx.stroke(); ctx.restore()
-    }
-    // Chaque bande fréquentielle occupe une place stable dans la largeur du geste :
-    // les graves vivent sur un bord, les aigus sur l'autre, comme une empreinte du son.
-    const bands = f.bands || []
-    for (let band = 0; band < bands.length; band += 1) {
-      const level = bands[band]
-      if (level < .018) continue
-      const position = band / Math.max(1, bands.length - 1) - .5
-      const offset = position * width * (.72 + f.entropy * .28)
-      const vibration = Math.sin((b.time * .018) + band * 1.73) * level * width * (.035 + f.high * .08)
-      const ax = a.x + nx * (offset + vibration)
-      const ay = a.y + ny * (offset + vibration)
-      const bx = b.x + nx * (offset - vibration)
-      const by = b.y + ny * (offset - vibration)
-      ctx.save(); ctx.globalCompositeOperation = 'multiply'
-      ctx.strokeStyle = `rgba(${activeInk.rgb},${.025 + level * .19})`
-      ctx.lineWidth = .18 + level * (1.25 + band / bands.length)
-      ctx.beginPath(); ctx.moveTo(ax, ay)
-      ctx.quadraticCurveTo((ax + bx) / 2 + nx * vibration * 1.8, (ay + by) / 2 + ny * vibration * 1.8, bx, by)
-      ctx.stroke(); ctx.restore()
-      if (band > bands.length * .58 && level > .12 && Math.random() < level * .22) {
-        const along = Math.random()
-        const cx = lerp(ax, bx, along), cy = lerp(ay, by, along)
-        ctx.strokeStyle = `rgba(${activeInk.rgb},${.025 + level * .09})`; ctx.lineWidth = .35
-        ctx.beginPath(); ctx.moveTo(cx - nx * level * 7, cy - ny * level * 7); ctx.lineTo(cx + nx * level * 7, cy + ny * level * 7); ctx.stroke()
-      }
-    }
-    if (f.flux > .18 && Math.random() < f.flux * .2) {
-      const radius = width * (.18 + f.low * .32 + f.flux * .2)
-      const halo = ctx.createRadialGradient(b.x, b.y, radius * .35, b.x, b.y, radius)
-      halo.addColorStop(0, `rgba(${activeInk.rgb},0)`)
-      halo.addColorStop(.72, `rgba(${activeInk.rgb},${.018 + f.flux * .035})`)
-      halo.addColorStop(1, `rgba(${activeInk.rgb},0)`)
-      ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(b.x, b.y, radius, 0, Math.PI * 2); ctx.fill()
-    }
-    const sediment = Math.min(9, Math.floor((f.noise * .55 + f.entropy * .45) * 8))
-    for (let grain = 0; grain < sediment; grain += 1) {
-      const along = Math.random(), across = gaussian() * width * .3
-      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(.025, .09)})`; ctx.beginPath()
-      ctx.arc(lerp(a.x, b.x, along) + nx * across, lerp(a.y, b.y, along) + ny * across, rand(.12, .65 + f.low), 0, Math.PI * 2); ctx.fill()
-    }
-    for (let i = 0; i < e.bristles.length; i += 2) {
-      const bristle = e.bristles[i]
-      const spectral = e.spectrum[bristle.bin] || 0
-      const activation = spectral * (0.25 + voice * 0.9)
-      if (Math.random() > 0.015 + activation * 0.82) continue
-      const oscillation = Math.sin(bristle.phase + performance.now() * 0.012 + spectral * 8)
-      const spread = bristle.u * width * 0.52
-      const deformation = oscillation * spectral * (1 + f.centroid * 11)
-      const bend = bristle.bend * f.mid * 2.5
-      const ax = a.x + nx * (spread + deformation) + tx * bend
-      const ay = a.y + ny * (spread + deformation) + ty * bend
-      const bx = b.x + nx * (spread + deformation), by = b.y + ny * (spread + deformation)
-      ctx.strokeStyle = `rgba(${activeInk.rgb},${(0.012 + activation * 0.13) * (1 - dryness * 0.45)})`
-      ctx.lineWidth = bristle.width * (0.35 + spectral * 1.5)
-      ctx.beginPath(); ctx.moveTo(ax + gaussian() * 0.2, ay + gaussian() * 0.2)
-      ctx.quadraticCurveTo((ax + bx) / 2 + nx * oscillation * f.high * 4, (ay + by) / 2 + ny * oscillation * f.high * 4, bx, by); ctx.stroke()
-    }
-    const breath = f.noise * (0.3 + f.high * 0.7) * voice
-    for (let i = 0; i < Math.floor(breath * 32); i += 1) {
-      const along = Math.random(), lateral = gaussian() * width * (0.3 + breath * 0.8)
-      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.006, 0.038)})`; ctx.beginPath()
-      ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.15, 1.8), 0, Math.PI * 2); ctx.fill()
-    }
-    for (let i = 0; i < Math.floor(voice * 18 + f.mid * 10); i += 1) {
-      const along = Math.random(), lateral = gaussian() * width * 0.27
-      ctx.fillStyle = `rgba(${activeInk.rgb},${rand(0.01, 0.07) * (.35 + voice)})`; ctx.beginPath()
-      ctx.arc(lerp(a.x, b.x, along) + nx * lateral, lerp(a.y, b.y, along) + ny * lateral, rand(0.12, 1.2), 0, Math.PI * 2); ctx.fill()
-    }
-    if (dryness > 0.4) {
-      ctx.save(); ctx.globalCompositeOperation = 'screen'
-      for (let i = 0; i < Math.floor(dryness * 10); i += 1) {
-        const offset = gaussian() * width * 0.2
-        ctx.strokeStyle = `rgba(238,233,223,${rand(0.01, 0.045)})`; ctx.lineWidth = rand(0.15, 0.8)
-        ctx.beginPath(); ctx.moveTo(a.x + nx * offset, a.y + ny * offset); ctx.lineTo(b.x + nx * offset, b.y + ny * offset); ctx.stroke()
-      }
-      ctx.restore()
-    }
-  }
-
-  const decodeRecording = async (chunks, sample) => {
-    if (!chunks.length) return
-    try {
-      const encoded = await new Blob(chunks).arrayBuffer()
-      const decoded = await engine.current.audioContext.decodeAudioData(encoded)
-      const frames = Math.min(decoded.length, Math.floor(decoded.sampleRate * 2))
-      const clipped = engine.current.audioContext.createBuffer(decoded.numberOfChannels, frames, decoded.sampleRate)
-      for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-        clipped.copyToChannel(decoded.getChannelData(channel).slice(decoded.length - frames), channel)
-      }
-      sample.audio = clipped
-    } catch (recordingError) {
-      console.warn('Échantillon audio non décodable', recordingError)
-    }
-  }
-
-  const captureImportedAudio = (sample) => {
-    const e = engine.current
-    if (!e.importedBuffer || !e.audioContext) return
-    const endTime = clamp(e.audioContext.currentTime - e.importedStartedAt, 0, e.importedBuffer.duration)
-    const duration = Math.min(2, sample.duration / 1000, endTime)
-    const startFrame = Math.floor((endTime - duration) * e.importedBuffer.sampleRate)
-    const frames = Math.max(1, Math.floor(duration * e.importedBuffer.sampleRate))
-    const clipped = e.audioContext.createBuffer(e.importedBuffer.numberOfChannels, frames, e.importedBuffer.sampleRate)
-    for (let channel = 0; channel < e.importedBuffer.numberOfChannels; channel += 1) {
-      clipped.copyToChannel(e.importedBuffer.getChannelData(channel).slice(startFrame, startFrame + frames), channel)
-    }
-    sample.audio = clipped
-  }
-
-  const paintLiveSegment = (a, b, gesture) => {
-    const e = engine.current
-    const bucket = Math.floor(b.time / TRAIL_SLICE)
-    const layer = e.trailLayers[bucket % TRAIL_LAYERS]
-    if (layer.bucket !== bucket) {
-      layer.context.clearRect(0, 0, e.width, e.height)
-      layer.bucket = bucket
-    }
-    paint(a, b, layer.context, gesture.style, b.features)
-  }
-
-  const composeLiveTrail = () => {
-    const e = engine.current
-    e.previewContext.clearRect(0, 0, e.width, e.height)
-    const oldestBucket = Math.floor((performance.now() - 2000) / TRAIL_SLICE)
-    const layers = e.trailLayers.filter((layer) => layer.bucket >= oldestBucket).sort((a, b) => a.bucket - b.bucket)
-    for (const layer of layers) {
-      e.previewContext.drawImage(layer.canvas, 0, 0, layer.canvas.width, layer.canvas.height, 0, 0, e.width, e.height)
-    }
-  }
-
-  const scheduleLiveComposition = () => {
-    const e = engine.current
-    if (e.composeAnimation) return
-    e.composeAnimation = requestAnimationFrame(() => {
-      e.composeAnimation = null
-      composeLiveTrail()
-    })
-  }
-
-  const pointerDown = (event) => {
-    const e = engine.current
-    if (e.state !== 'LIVE' || isPlaying) return
-    try {
-      e.history.push({ pixels: e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height), sampleCount: e.samples.length })
-      if (e.history.length > 8) e.history.shift()
-    } catch { e.history = [] }
-    e.pointerDown = true
-    setHasMarks(true)
-    const firstPoint = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
-    e.lastPoint = firstPoint
-    e.gesture = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, points: [firstPoint], style: { ink, brushSize } }
-    for (const layer of e.trailLayers) { layer.context.clearRect(0, 0, e.width, e.height); layer.bucket = -1 }
-    e.previewContext.clearRect(0, 0, e.width, e.height)
-    e.recorderChunks = []
-    if (typeof MediaRecorder !== 'undefined' && e.stream) {
-      try {
-        e.recorder = new MediaRecorder(e.stream)
-        e.recorder.ondataavailable = ({ data }) => { if (data.size) e.recorderChunks.push(data) }
-        e.recorder.start(100)
-      } catch (recordingError) { console.warn('Enregistrement indisponible', recordingError) }
-    }
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-  }
-  const pointerMove = (event) => {
-    const e = engine.current
-    if (e.state !== 'LIVE' || !e.pointerDown || !e.lastPoint) return
-    const point = { x: event.clientX, y: event.clientY, time: performance.now(), pressure: event.pressure > 0 ? event.pressure : 0.5, features: { ...e.features } }
-    const distance = Math.hypot(point.x - e.lastPoint.x, point.y - e.lastPoint.y)
-    if (distance < 0.5) return
-    const steps = Math.min(4, Math.max(1, Math.ceil(distance / 8)))
-    let previous = e.lastPoint
-    for (let i = 1; i <= steps; i += 1) {
-      const t = i / steps
-      const next = { x: lerp(e.lastPoint.x, point.x, t), y: lerp(e.lastPoint.y, point.y, t), time: lerp(e.lastPoint.time, point.time, t), pressure: lerp(e.lastPoint.pressure, point.pressure, t), features: point.features }
-      e.gesture.points.push(next)
-      paintLiveSegment(previous, next, e.gesture)
-      previous = next
-    }
-    const cutoff = point.time - 2000
-    const firstVisible = Math.max(0, e.gesture.points.findIndex((item) => item.time >= cutoff) - 1)
-    if (firstVisible > 0) e.gesture.points.splice(0, firstVisible)
-    scheduleLiveComposition()
-    e.lastPoint = point
-  }
-  const lift = () => {
-    const e = engine.current
-    if (!e.pointerDown || !e.gesture) return
-    e.pointerDown = false; e.lastPoint = null
-    const gesture = e.gesture
-    if (gesture.points.length < 2) {
-      if (e.recorder?.state === 'recording') e.recorder.stop()
-      e.gesture = null; e.recorder = null; return
-    }
-    if (e.composeAnimation) { cancelAnimationFrame(e.composeAnimation); e.composeAnimation = null }
-    composeLiveTrail()
-    gesture.duration = Math.max(120, gesture.points.at(-1).time - gesture.points[0].time)
-    e.context.drawImage(previewRef.current, 0, 0, previewRef.current.width, previewRef.current.height, 0, 0, e.width, e.height)
-    e.previewContext.clearRect(0, 0, e.width, e.height)
-    const sample = { ...gesture, audio: null }
-    e.samples.push(sample); setSampleCount(e.samples.length)
-    if (e.importedBuffer) captureImportedAudio(sample)
-    else if (e.recorder?.state === 'recording') {
-      const chunks = e.recorderChunks
-      e.recorder.onstop = () => decodeRecording(chunks, sample)
-      e.recorder.stop()
-    }
-    e.gesture = null; e.recorder = null
-  }
-  const reset = () => {
-    const e = engine.current
-    makePaper(); e.bristles = createBristles(FFT_SIZE / 2); e.state = 'IDLE'
-    try { e.playbackSource?.stop() } catch { /* aucune lecture active */ }
-    e.playbackSource = null; e.importedBuffer = null; setSourceName('MICROPHONE')
-    e.history = []; e.samples = []; setHasMarks(false); setSampleCount(0)
-    setPhase('idle'); setStatus('Prêt à créer'); setProgress(0); setElapsed(0); setEnergy(0); setError('')
-  }
-
-  const undo = () => {
-    const e = engine.current
-    const previous = e.history.pop()
-    if (previous) e.context.putImageData(previous.pixels, 0, 0)
-    if (previous) e.samples.splice(previous.sampleCount)
-    setSampleCount(e.samples.length)
-    setHasMarks(Boolean(previous?.sampleCount))
-  }
-
-  const clearPaper = () => {
-    const e = engine.current
-    if (hasMarks) e.history.push({ pixels: e.context.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height), sampleCount: e.samples.length })
-    makePaper(); setHasMarks(e.history.length > 0)
-  }
-
-  const download = () => {
-    const link = document.createElement('a')
-    link.download = `koe-no-fude-${new Date().toISOString().slice(0, 10)}.png`
-    link.href = canvasRef.current.toDataURL('image/png')
-    link.click()
-  }
-
-  const replay = async (selection) => {
-    const e = engine.current
-    if (!e.samples.length || isPlaying) return
-    const isolated = Array.isArray(selection)
-    const sequence = isolated ? selection : e.samples
-    setIsPlaying(true); setStatus('Relecture des gestes')
-    await e.audioContext?.resume()
-    if (isolated) e.previewContext.clearRect(0, 0, e.width, e.height)
-    else { makePaper(); e.history = [] }
-    for (const sample of sequence) {
-      if (sample.audio && e.audioContext) {
-        const source = e.audioContext.createBufferSource()
-        source.buffer = sample.audio; source.connect(e.audioContext.destination); source.start()
-      }
-      await new Promise((resolve) => {
-        const started = performance.now()
-        let rendered = 1
-        const frame = (now) => {
-          const elapsed = now - started
-          while (rendered < sample.points.length && sample.points[rendered].time - sample.points[0].time <= elapsed) {
-            paint(sample.points[rendered - 1], sample.points[rendered], isolated ? e.previewContext : e.context, sample.style, sample.points[rendered].features)
-            rendered += 1
-          }
-          if (elapsed < sample.duration) requestAnimationFrame(frame)
-          else resolve()
-        }
-        requestAnimationFrame(frame)
-      })
-    }
-    if (isolated) e.previewContext.clearRect(0, 0, e.width, e.height)
-    setHasMarks(true); setIsPlaying(false); setStatus(e.state === 'LIVE' ? 'Maintenez pour peindre' : 'Séquence terminée')
-  }
-
-  const hint = isPlaying ? 'VOS GESTES REPRENNENT VIE' : phase === 'live' ? 'MAINTENEZ POUR PEINDRE · RELÂCHEZ POUR FIXER' : phase === 'drying' ? 'L’AQUARELLE SE FIXE' : phase === 'finished' ? 'REJOUEZ · EXPORTEZ · RECOMMENCEZ' : 'CHOISISSEZ UNE SOURCE SONORE'
+  const selectBrush = (nextBrush) => { engine.current.brush = nextBrush; setBrush(nextBrush) }
+  const setSpray = (active) => { engine.current.spraying = active }
+  const clear = () => { engine.current.particles = []; paintPaper() }
+  const download = () => { const link = document.createElement('a'); link.download = 'flux-sonore.png'; link.href = canvasRef.current.toDataURL('image/png'); link.click() }
 
   return (
-    <main className={`app phase-${phase}`}>
-      <canvas ref={canvasRef} className="paper" aria-label="Surface de dessin réactive à la voix" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={lift} onPointerCancel={lift} />
-      <canvas ref={previewRef} className="paper live-layer" aria-hidden="true" />
-      <header className="brand" aria-label="Koe no Fude">
-        <span className="brand-mark" aria-hidden="true">声</span>
-        <span><strong>Koe no Fude</strong><small>声の筆 · LE PINCEAU DE LA VOIX</small></span>
-      </header>
-      {phase !== 'idle' && <aside className="studio-tools simple-tools" aria-label="Matière du pinceau">
-        <div className="tool-heading"><span>MATIÈRE</span></div>
-        <div className="size-control">
-          <label htmlFor="brush-size"><span>ÉPAISSEUR</span><b>{Math.round(brushSize * 100)}</b></label>
-          <input id="brush-size" type="range" min="0.45" max="1.8" step="0.05" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
-        </div>
-        <div className="ink-control"><span>PIGMENTS</span><div>{INKS.map((color) => <button key={color.id} className={ink.id === color.id ? 'active' : ''} style={{ '--ink': color.hex }} onClick={() => setInk(color)} aria-label={color.label} title={color.label} />)}</div></div>
-      </aside>}
-      {phase === 'idle' && <section className="source-panel" aria-labelledby="source-title">
-        <p>01 · SOURCE SONORE</p>
-        <h1 id="source-title">Que voulez-vous<br />faire entendre ?</h1>
-        <div><button onClick={startSession}><span>●</span><b>VOIX EN DIRECT</b><small>Peindre avec le microphone</small></button><button onClick={() => fileInputRef.current?.click()}><span>＋</span><b>FICHIER AUDIO</b><small>Importer un MP3 ou un WAV</small></button></div>
-        <em>Maintenez le doigt pour créer un fragment de 2 secondes.<br />Relâchez pour le déposer sur le papier.</em>
-      </section>}
-      <input ref={fileInputRef} className="audio-file-input" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" onChange={importAudio} />
-      {phase !== 'idle' && <section className="controls" aria-live="polite">
-        {phase === 'live' && <button className="finish-button" onClick={finishSession}>TERMINER</button>}
-        <div className="voice-orb" aria-hidden="true"><span style={{ transform: `scale(${0.42 + energy * 1.5})`, opacity: 0.38 + energy * 0.62 }} /></div>
-        <div className="spectral-signature" aria-hidden="true">{(engine.current.features?.bands || Array(SPECTRAL_BANDS).fill(0)).map((value, index) => <i key={index} style={{ transform: `scaleY(${.08 + value * .92})` }} />)}</div>
-        <div className="session-info">
-          <div><span>{status}</span><span className="timer">{phase === 'live' ? engine.current.sessionDuration ? `${Math.max(0, Math.ceil(engine.current.sessionDuration * (1 - progress)))}s` : `${Math.floor(elapsed)}s` : '—'}</span></div>
-          <div className="progress"><span style={{ transform: `scaleX(${progress})` }} /></div>
-        </div>
-        <span className="source-chip" title={sourceName}>{sourceName}</span>
-      </section>}
-      {sampleCount > 0 && <div className="sample-strip" aria-label={`${sampleCount} samples enregistrés`}>
-        <span>SÉQUENCE</span>
-        {engine.current.samples.map((sample, index) => <button key={sample.id} style={{ '--sample': sample.style.ink.hex }} onClick={() => replay([sample])} disabled={isPlaying} aria-label={`Rejouer le sample ${index + 1}`}><i />{String(index + 1).padStart(2, '0')}</button>)}
-      </div>}
-      <nav className="canvas-actions" aria-label="Actions de la toile">
-        <button className="replay-button" onClick={() => replay()} disabled={!sampleCount || isPlaying} title="Rejouer les gestes"><span>▶</span> REJOUER <b>{sampleCount}</b></button>
-        <button onClick={undo} disabled={!hasMarks} title="Annuler"><span>↶</span> ANNULER</button>
-        <button onClick={clearPaper} disabled={!hasMarks} title="Effacer la toile"><span>×</span> EFFACER</button>
-        <button onClick={download} title="Exporter l’œuvre"><span>↓</span> EXPORTER</button>
-        {phase === 'finished' && <button onClick={reset} title="Nouvelle œuvre"><span>＋</span> NOUVELLE</button>}
-      </nav>
-      <div className="sound-legend" aria-hidden="true"><span>GRAVE</span><i /><i /><i /><i className="lit" style={{ transform: `scaleY(${.25 + energy * .75})` }} /><span>AIGU</span></div>
-      {error && <p className="error-message">{error}</p>}
-      <div className="edition"><span>EXPÉRIENCE SONORE</span><i /><span>ÉDITION 01</span></div>
-      <p className="hint">{hint}</p>
+    <main className={`app ${phase === 'live' ? 'is-live' : ''}`}>
+      <canvas ref={canvasRef} className="space" aria-label="Tunnel sonore génératif" />
+      <header className="brand"><span className="brand-mark">音</span><span><strong>Flux</strong><small>PEINDRE LE MOUVEMENT DU SON</small></span></header>
+      {phase === 'idle' && <section className="welcome"><p>EXPÉRIENCE AUDIOVISUELLE</p><h1>Suivez le son<br />dans l’espace.</h1><p className="welcome-copy">Un point écoute, vole et ouvre un tunnel. Maintenez le spray pour déposer sa trajectoire.</p><button onClick={start}>ENTRER DANS LE FLUX <span>→</span></button>{error && <em>{error}</em>}</section>}
+      {phase === 'live' && <>
+        <div className="sound-status"><i style={{ transform: `scale(${.6 + energy})` }} /><span>SON ACTIF</span></div>
+        <nav className="brushes" aria-label="Choisir une brosse">{BRUSHES.map((item, index) => <button key={item.id} className={brush.id === item.id ? 'active' : ''} onClick={() => selectBrush(item)} style={{ '--brush': item.color }} aria-pressed={brush.id === item.id}><i /><span><b>0{index + 1} · {item.name}</b><small>{item.detail}</small></span></button>)}</nav>
+        <button className="spray" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setSpray(true) }} onPointerUp={() => setSpray(false)} onPointerCancel={() => setSpray(false)}><span>MAINTENIR</span><b>SPRAY</b><i /></button>
+        <div className="actions"><button onClick={clear}>EFFACER</button><button onClick={download}>EXPORTER</button></div>
+        <p className="instruction">LE SON DIRIGE LE VOL · VOUS DÉCIDEZ QUAND IL LAISSE UNE TRACE</p>
+      </>}
     </main>
   )
 }
